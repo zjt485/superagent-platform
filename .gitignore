@@ -1,0 +1,11 @@
+node_modules/
+dist/
+server/public/
+.env
+.env.local
+data/
+workspaces/
+logs/
+coverage/
+*.log
+.DS_Store

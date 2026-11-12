@@ -1,0 +1,27 @@
+# Caddy terminates TLS and forwards every Webhook, API and console request to
+# the control plane. IM and GitHub both require a public HTTPS callback URL.
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+		-Server
+	}
+
+	reverse_proxy api:3000 {
+		health_uri /healthz
+		health_interval 15s
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 50MiB
+			roll_keep 5
+		}
+		format json
+	}
+}

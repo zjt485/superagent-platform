@@ -1,0 +1,25 @@
+{
+  "name": "superagent-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Server-side multi-project agent platform (MVP) built from DEVELOPMENT_PLAN.md",
+  "type": "module",
+  "packageManager": "pnpm@10.27.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "install:all": "pnpm install",
+    "build": "pnpm --filter @superagent/web build && pnpm --filter @superagent/server build",
+    "typecheck": "pnpm --filter @superagent/server typecheck && pnpm --filter @superagent/web typecheck",
+    "test": "pnpm --filter @superagent/server test",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "dev:api": "pnpm --filter @superagent/server dev:api",
+    "dev:worker": "pnpm --filter @superagent/server dev:worker",
+    "dev:web": "pnpm --filter @superagent/web dev",
+    "db:generate": "pnpm --filter @superagent/server db:generate",
+    "db:migrate": "pnpm --filter @superagent/server db:migrate",
+    "demo": "pnpm --filter @superagent/server demo",
+    "screenshots": "node scripts/ui-screenshots.mjs"
+  }
+}

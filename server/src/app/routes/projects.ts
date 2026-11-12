@@ -1,0 +1,228 @@
+import { and, count, desc, eq, ilike, inArray, or } from 'drizzle-orm'
+import { projectMembers } from '../../db/schema.js'
+import type { FastifyInstance } from 'fastify'
+import { z } from 'zod'
+import type { AppContext } from '../context.js'
+import { parseBody, parseQuery, pathParam, queryOf, requireUser, uuidParam } from '../../http/helpers.js'
+import {
+  addMemberByIdentity,
+  addMemberByUserId,
+  changeMemberRole,
+  createProject,
+  listMembers,
+  listProjects,
+  projectBundle,
+  removeMember,
+  updateProject,
+} from '../../services/projects.js'
+import { requireProjectAccess } from '../../services/access.js'
+import { listAudit } from '../../services/audit.js'
+import { tokensUsedToday, usageSeries } from '../../services/usage.js'
+import { runs, tickets, users } from '../../db/schema.js'
+import { parsePolicy } from '../../domain/policy.js'
+
+const createProjectSchema = z.object({
+  name: z.string().trim().min(1).max(80),
+  slug: z.string().trim().max(48).optional(),
+  description: z.string().max(2000).optional(),
+  policy: z.unknown().optional(),
+  modelConfig: z.unknown().optional(),
+})
+
+const updateProjectSchema = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    policy: z.unknown().optional(),
+    modelConfig: z.unknown().optional(),
+    status: z.enum(['draft', 'active', 'paused', 'archived']).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: '没有需要更新的字段' })
+
+const memberRoleSchema = z.enum(['maintainer', 'member', 'viewer'])
+
+const addMemberSchema = z
+  .object({
+    userId: z.string().uuid().optional(),
+    provider: z.enum(['feishu', 'wecom']).optional(),
+    externalId: z.string().min(1).max(200).optional(),
+    role: memberRoleSchema.default('member'),
+  })
+  .refine((value) => Boolean(value.userId) !== Boolean(value.provider && value.externalId), {
+    message: '需要提供 userId，或 provider + externalId',
+  })
+
+const auditQuerySchema = z.object({
+  action: z.string().max(100).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+})
+
+export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): void {
+  app.get('/v1/projects', async (request) => {
+    const user = requireUser(request)
+    return { items: await listProjects(ctx, user) }
+  })
+
+  app.post('/v1/projects', async (request, reply) => {
+    const user = requireUser(request)
+    const body = parseBody(createProjectSchema, request)
+    const project = await createProject(ctx, user, body)
+    reply.code(201)
+    return { project: await projectBundle(ctx, project.id, user) }
+  })
+
+  app.get('/v1/projects/:id', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    return { project: await projectBundle(ctx, projectId, user) }
+  })
+
+  app.patch('/v1/projects/:id', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const body = parseBody(updateProjectSchema, request)
+    await updateProject(ctx, projectId, user, body)
+    return { project: await projectBundle(ctx, projectId, user) }
+  })
+
+  app.get('/v1/projects/:id/members', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
+    return { items: await listMembers(ctx, projectId) }
+  })
+
+  app.post('/v1/projects/:id/members', async (request, reply) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const body = parseBody(addMemberSchema, request)
+    if (body.userId) {
+      await addMemberByUserId(ctx, projectId, user, { userId: body.userId, role: body.role })
+    } else {
+      await addMemberByIdentity(ctx, projectId, user, {
+        provider: body.provider as string,
+        externalId: body.externalId as string,
+        role: body.role,
+      })
+    }
+    reply.code(201)
+    return { items: await listMembers(ctx, projectId) }
+  })
+
+  app.patch('/v1/projects/:id/members/:userId', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const userId = pathParam(request, 'userId')
+    const body = parseBody(z.object({ role: z.enum(['owner', 'maintainer', 'member', 'viewer']) }), request)
+    await changeMemberRole(ctx, projectId, user, userId, body.role)
+    return { items: await listMembers(ctx, projectId) }
+  })
+
+  app.delete('/v1/projects/:id/members/:userId', async (request, reply) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    await removeMember(ctx, projectId, user, pathParam(request, 'userId'))
+    reply.code(204)
+    return null
+  })
+
+  app.get('/v1/projects/:id/overview', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const access = await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
+    const statusCounts = await ctx.db
+      .select({ status: tickets.status, value: count() })
+      .from(tickets)
+      .where(eq(tickets.projectId, projectId))
+      .groupBy(tickets.status)
+    const runCounts = await ctx.db
+      .select({ status: runs.status, value: count() })
+      .from(runs)
+      .where(eq(runs.projectId, projectId))
+      .groupBy(runs.status)
+    const recentTickets = await ctx.db
+      .select()
+      .from(tickets)
+      .where(eq(tickets.projectId, projectId))
+      .orderBy(desc(tickets.createdAt))
+      .limit(8)
+    const activeRunRows = await ctx.db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.projectId, projectId), inArray(runs.status, ['queued', 'running'])))
+      .orderBy(desc(runs.createdAt))
+      .limit(5)
+    const todayTokens = await tokensUsedToday(ctx, projectId)
+    return {
+      project: await projectBundle(ctx, projectId, user),
+      tickets: Object.fromEntries(statusCounts.map((row) => [row.status, Number(row.value)])),
+      runs: Object.fromEntries(runCounts.map((row) => [row.status, Number(row.value)])),
+      recentTickets,
+      activeRuns: activeRunRows,
+      todayTokens,
+      policy: parsePolicy(access.project.policyJson),
+    }
+  })
+
+  app.get('/v1/projects/:id/audit', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
+    const query = parseQuery(auditQuerySchema, request)
+    const items = await listAudit(ctx, {
+      projectId,
+      ...(query.action ? { action: query.action } : {}),
+      ...(query.from ? { from: new Date(query.from) } : {}),
+      ...(query.to ? { to: new Date(query.to) } : {}),
+      ...(query.limit ? { limit: query.limit } : {}),
+      ...(query.offset ? { offset: query.offset } : {}),
+    })
+    return { items }
+  })
+
+  app.get('/v1/projects/:id/usage', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const access = await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
+    const days = z.coerce.number().int().min(1).max(90).catch(30).parse(queryOf(request).days ?? 30)
+    const series = await usageSeries(ctx, projectId, days)
+    return {
+      series,
+      todayTokens: await tokensUsedToday(ctx, projectId),
+      policy: parsePolicy(access.project.policyJson),
+    }
+  })
+
+  // A deliberately narrow lookup: only users who already share a project with
+  // the requester can be found (admins may search everyone).
+  app.get('/v1/users', async (request) => {
+    const user = requireUser(request)
+    const query = queryOf(request).q?.trim() ?? ''
+    if (!query) return { items: [] }
+    const pattern = `%${query.slice(0, 80)}%`
+    const match = or(ilike(users.name, pattern), ilike(users.email, pattern))
+    if (user.isAdmin) {
+      const rows = await ctx.db
+        .select({ id: users.id, name: users.name, email: users.email, avatar: users.avatar })
+        .from(users)
+        .where(match)
+        .limit(20)
+      return { items: rows }
+    }
+    const mine = await ctx.db
+      .select({ projectId: projectMembers.projectId })
+      .from(projectMembers)
+      .where(eq(projectMembers.userId, user.id))
+    if (mine.length === 0) return { items: [] }
+    const rows = await ctx.db
+      .selectDistinct({ id: users.id, name: users.name, email: users.email, avatar: users.avatar })
+      .from(users)
+      .innerJoin(projectMembers, eq(projectMembers.userId, users.id))
+      .where(and(inArray(projectMembers.projectId, mine.map((row) => row.projectId)), match))
+      .limit(20)
+    return { items: rows }
+  })
+}
