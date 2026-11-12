@@ -163,11 +163,28 @@ try {
   await navigate(`${BASE}/projects/${projectId}?tab=repo`)
   await shot('07b-repo')
 
+  await navigate(`${BASE}/projects/${projectId}?tab=channel`)
+  await shot('07g-channel')
+
   await navigate(`${BASE}/projects/${projectId}?tab=audit`)
   await shot('07c-audit')
 
   await navigate(`${BASE}/projects/${projectId}?tab=settings`)
   await shot('07d-settings')
+
+  // Invitation → group entry flow (the demo channel has a QR + join link).
+  const invite = await evaluate(
+    `fetch('/v1/projects/${projectId}/invites', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json', 'x-superagent-csrf': '1' }, body: JSON.stringify({ role: 'member', maxUses: 5, expiresInHours: 24 }) }).then((response) => response.json())`,
+  )
+  if (invite?.token) {
+    await navigate(`${BASE}/invite/${invite.token}`)
+    await shot('07e-invite')
+    await evaluate(
+      `(() => { const button = [...document.querySelectorAll('button')].find((item) => item.textContent?.includes('接受邀请并加入')); if (button) { button.click(); return true } return false })()`,
+    )
+    await sleep(1600)
+    await shot('07f-invite-group')
+  }
 
   await evaluate(`localStorage.setItem('sa-theme', 'dark')`)
   await navigate(`${BASE}/projects/${projectId}`)

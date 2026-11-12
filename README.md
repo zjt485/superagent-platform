@@ -30,7 +30,7 @@ pnpm demo           # 初始化演示数据、跑通一次工单，并在 :3100 
 演示会：
 
 1. 创建项目「演示项目」，绑定 Mock 仓库 `demo-org/hello-world` 和飞书群 `oc_demo_project`；
-2. 生成一条邀请链接；
+2. 生成一条邀请链接，接受后会显示项目群二维码与入群链接；
 3. 创建一张工单，由 Worker 依次执行 **plan → execute**，在工作区产生真实文件改动，提交到 `agent/*` 分支并创建 Mock PR；
 4. 把「计划已生成」「开始执行」「PR 已创建」推送到模拟飞书群（终端输出）。
 
@@ -58,6 +58,7 @@ pnpm check      # typecheck + test + build
 | --- | --- |
 | 多项目 / 单仓库 | 项目绑定一个 GitHub 仓库；项目间数据按 `project_id` 隔离 |
 | 成员与角色 | Owner / Maintainer / Member / Viewer；邀请二维码、角色变更、移除 |
+| 扫码入项目 + 入群 | 扫项目邀请二维码 → OAuth 登录 → 加入项目；随后展示项目群二维码/邀请链接，飞书可自动拉群 |
 | IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信 Adapter（验签/解密/发送，能力差异见文档） |
 | @bot 接单 | 确定性 Mention Router：只处理 @bot、命令、已有工单线程回复；非 @ 普通消息忽略 |
 | 命令 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` |
@@ -121,9 +122,13 @@ platform/
 | --- | --- |
 | ![登录](docs/screenshots/01-login.png) | ![工单](docs/screenshots/05-ticket.png) |
 
-| 邀请二维码 | 深色主题 |
+| 邀请二维码 | 扫码入群 |
 | --- | --- |
-| ![邀请](docs/screenshots/06b-invite-qr.png) | ![深色](docs/screenshots/08-project-dark.png) |
+| ![邀请](docs/screenshots/06b-invite-qr.png) | ![扫码入群](docs/screenshots/07f-invite-group.png) |
+
+| 深色主题 | IM 群与入群配置 |
+| --- | --- |
+| ![深色](docs/screenshots/08-project-dark.png) | ![IM 群](docs/screenshots/07g-channel.png) |
 
 更多页面与设计说明见 [UI.md](docs/UI.md)。
 

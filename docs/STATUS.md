@@ -10,7 +10,7 @@
 | FR-02 | GitHub App 绑定、选择仓库、installation | ✅ | `github/client.ts`、`routes/repo.ts`；Mock 模式 e2e 覆盖；真实 App 客户端需凭据联调 |
 | FR-03 | 成员与角色、邀请、移除、改角色 | ✅ 基本完成 | `services/projects.ts`、`invites.ts`；e2e 邀请加入。**未做所有权转移接口**，Owner 不能直接授予 |
 | FR-04 | 邀请二维码、签名 token、过期、次数 | ✅ | `services/invites.ts`（SHA-256 存储、原子扣减、qrcode data URL）；e2e 预览与接受 |
-| FR-05 | IM 群绑定，控制台 + 群内 `/bind` | ✅ | `bindChannel`、`tryBindUnboundChat`；Feishu intake 测试覆盖 `/bind` |
+| FR-05 | IM 群绑定，控制台 + 群内 `/bind`；扫码入群 | ✅ | `bindChannel`、`tryBindUnboundChat`；`services/group-join.ts` 提供群二维码/邀请链接与飞书自动拉群；`tests/group-join.test.ts` |
 | FR-06 | @bot 接单、命令、工单线程回复 | ✅ | `domain/intake.ts`、`services/intake.ts`；`tests/intake.test.ts`；Feishu e2e 覆盖忽略/去重/线程 |
 | FR-07 | 工单生命周期 | ✅ | `services/tickets.ts` 状态机；e2e 审批/取消/重试 |
 | FR-08 | Run 队列、Worker、超时、重试、取消、日志 | ✅ | `services/runs.ts`、`worker/pipeline.ts`、`orchestrator.ts`；reaper 实现心跳超时；e2e 跑通 plan/execute |
@@ -38,7 +38,7 @@
 | # | 标准 | 结果 | 证据 |
 | --- | --- | --- | --- |
 | 1 | Owner 创建项目、绑定仓库和群、生成二维码 | ✅ | `tests/e2e.test.ts`「authenticates…」；UI 邀请页截图 |
-| 2 | 新成员扫码登录后加入项目，能看到项目入口 | ✅ | 邀请接受 e2e；`/invite/:token` 页面 |
+| 2 | 新成员扫码登录后加入项目，能看到项目入口 | ✅ | 邀请接受 e2e；`/invite/:token` 页面；接受后展示项目群二维码/链接，或在飞书权限满足时自动拉群（`group-join` 测试） |
 | 3 | 成员 @bot，5 秒内收到回执并生成 Ticket | ✅ | Feishu intake e2e；Webhook 同步建单 + Outbox 1s 发送 |
 | 4 | Worker 完成修改并开 PR，群里收到链接 | ✅ | e2e「runs a console ticket…」；FakeRuntime/FakeGit/Mock GitHub 全链路 |
 | 5 | 非成员、非 @、其他群消息不建单 | ✅ | `tests/intake.test.ts`；Feishu e2e 的 ignored/非成员断言 |
@@ -52,6 +52,8 @@
 
 ## 4. 测试清单
 
+当前共 **36** 个用例（8 个文件）。
+
 | 文件 | 覆盖 |
 | --- | --- |
 | `tests/intake.test.ts` | 命令解析、Mention Router 优先级、线程免 @、暂停、角色、@ 占位符 |
@@ -61,6 +63,7 @@
 | `tests/db.test.ts` | 迁移与 Drizzle schema 往返 |
 | `tests/e2e.test.ts` | 登录/CSRF/角色/邀请/项目隔离；计划→执行→PR→合并；审批/取消/重试；飞书去重、线程、忽略、暂停、`/bind` |
 | `tests/lifecycle.test.ts` | 心跳超时回收、PR 评论触发新执行、每日 Token 预算拒绝入队 |
+| `tests/group-join.test.ts` | 群二维码/邀请链接、飞书自动拉群、拉群失败回落 |
 
 运行：
 
@@ -72,8 +75,8 @@ cd platform && pnpm test
 
 1. **演示默认 FakeRuntime + Mock GitHub**：真实 Agent 与 GitHub 需要按 [DEPLOYMENT.md](DEPLOYMENT.md) 配置；接口和测试已隔离在这两个端口后面。
 2. **计划审批为二值**：只能批准或取消，没有“拒绝并附意见”的独立动作；PR 合并审批在 GitHub 侧完成。
-3. **企业微信线程/自动拉群缺失**：平台能力所限，按方案退化为“绑定已有群”；@bot 用文本匹配。
-4. **无自动建群**：邀请二维码是“项目邀请”，群由团队预先创建后绑定（方案 §4.2 的兜底路径）。
+3. **企业微信线程/自动拉群缺失**：平台能力所限，按方案退化为“绑定已有群 + 群二维码/邀请链接”；@bot 用文本匹配。
+4. **无自动建群**：邀请二维码是“项目邀请”，群由团队预先创建后绑定；入群优先自动拉人（飞书），否则扫码/点链接入群（方案 §4.2 的兜底路径）。
 5. **数据保留清理未实现**：消息 90 天、审计 1 年的清理应作为定时任务补充；当前只提供级联删除。
 6. **RLS 未启用**：租户隔离由应用层强制并测试；可选 Postgres RLS 未实现。
 7. **无对象存储/MinIO**：Run 日志存 `run_events`，`logs_url` 预留但未上传。

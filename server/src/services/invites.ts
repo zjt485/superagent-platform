@@ -7,6 +7,7 @@ import { newId } from '../domain/ids.js'
 import type { MemberRole } from '../domain/status.js'
 import { sha256 } from '../security/tokens.js'
 import { audit } from './audit.js'
+import { projectGroupInfo, type ProjectGroupInfo } from './group-join.js'
 
 export interface CreateInviteInput {
   role?: MemberRole
@@ -35,6 +36,7 @@ export interface InvitePreview {
   usedCount?: number
   role?: MemberRole
   chatProvider?: string
+  group?: ProjectGroupInfo | null
 }
 
 async function inviteUrl(deps: Deps, token: string): Promise<string> {
@@ -141,6 +143,7 @@ export async function previewInvite(deps: Deps, token: string): Promise<InvitePr
     .from(channels)
     .where(and(eq(channels.projectId, project.id), eq(channels.status, 'active')))
   if (channel) preview.chatProvider = channel.provider
+  preview.group = await projectGroupInfo(deps, project.id)
   return preview
 }
 

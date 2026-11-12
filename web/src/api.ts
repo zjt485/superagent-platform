@@ -75,7 +75,14 @@ export interface ProjectBundle {
     defaultBranch: string
     private: boolean
   } | null
-  channel: { id: string; provider: ChannelProvider; name: string | null; externalChatId: string; status: string } | null
+  channel: {
+    id: string
+    provider: ChannelProvider
+    name: string | null
+    externalChatId: string
+    status: string
+    config: Record<string, unknown>
+  } | null
   memberCount: number
   readiness: { repo: boolean; channel: boolean; canActivate: boolean }
   createdAt: string
@@ -181,7 +188,23 @@ export interface Channel {
   externalChatId: string
   name: string | null
   status: 'active' | 'disabled'
+  config: Record<string, unknown>
   createdAt: string
+}
+
+export interface ProjectGroupInfo {
+  provider: ChannelProvider
+  name: string | null
+  chatId: string
+  joinUrl: string | null
+  qrDataUrl: string | null
+  autoJoin: boolean
+}
+
+export interface GroupJoinOutcome {
+  group: ProjectGroupInfo | null
+  joined: boolean
+  error?: string
 }
 
 export interface Invite {
@@ -205,6 +228,7 @@ export interface InvitePreview {
   usedCount?: number
   role?: MemberRole
   chatProvider?: string
+  group?: ProjectGroupInfo | null
 }
 
 export interface AuditEntry {
@@ -366,6 +390,10 @@ export const api = {
     revoke: (projectId: string, inviteId: string) =>
       request<null>(`/v1/projects/${projectId}/invites/${inviteId}`, { method: 'DELETE' }),
     preview: (token: string) => request<{ invite: InvitePreview }>(`/v1/invites/${encodeURIComponent(token)}`),
-    accept: (token: string) => request<{ project: ProjectBundle; role: MemberRole; alreadyMember: boolean }>(`/v1/invites/${encodeURIComponent(token)}/accept`, { method: 'POST' }),
+    accept: (token: string) =>
+      request<{ project: ProjectBundle; role: MemberRole; alreadyMember: boolean; group: GroupJoinOutcome }>(
+        `/v1/invites/${encodeURIComponent(token)}/accept`,
+        { method: 'POST' },
+      ),
   },
 }

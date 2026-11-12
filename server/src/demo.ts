@@ -16,7 +16,9 @@ import { flushOutbox } from './services/outbox.js'
 import { executeClaimedRun, type WorkerContext } from './worker/pipeline.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { FakeRuntime } from './runtime/fake.js'
-import { projects } from './db/schema.js'
+import { and, eq } from 'drizzle-orm'
+import QRCode from 'qrcode'
+import { channels, projects } from './db/schema.js'
 import type { ChannelProvider } from './domain/status.js'
 
 const port = Number(process.env.DEMO_PORT ?? 3100)
@@ -106,15 +108,37 @@ if (existing.length === 0) {
     [
       '',
       '演示数据已就绪：',
+      `  邀请：${invite.invite.url}（接受后可看到项目群二维码）`,
       `  项目：${project.name} (${project.slug})`,
       `  工单：${finalTicket.title} → 状态 ${finalTicket.status}`,
       `  PR：${finalTicket.prUrl ?? '（未生成）'}`,
-      `  邀请：${invite.invite.url}`,
       '',
       '打开控制台后用开发登录：昵称 Alice（Owner）或 Bob（Member）。',
       '',
     ].join('\n'),
   )
+}
+
+// Ensure the demo group has a join link and QR so the invitation flow can
+// demonstrate "accept project invite → scan to join the group" even on an
+// already-seeded database.
+const [demoProject] = await handle.db.select().from(projects).limit(1)
+if (demoProject) {
+  const [channel] = await handle.db
+    .select()
+    .from(channels)
+    .where(and(eq(channels.projectId, demoProject.id), eq(channels.status, 'active')))
+  if (channel) {
+    const config = (channel.config ?? {}) as Record<string, unknown>
+    if (typeof config.joinUrl !== 'string' || typeof config.qrDataUrl !== 'string') {
+      const joinUrl = `https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(channel.externalChatId)}`
+      const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, width: 320 })
+      await handle.db
+        .update(channels)
+        .set({ config: { ...config, joinUrl, qrDataUrl, autoJoin: true }, updatedAt: new Date() })
+        .where(eq(channels.id, channel.id))
+    }
+  }
 }
 
 const app = await buildApp(ctx)

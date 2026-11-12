@@ -118,8 +118,8 @@ Body：
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/v1/invites/:token` | 公开 | 预览：项目、角色、有效期、剩余次数 |
-| POST | `/v1/invites/:token/accept` | 登录 | 加入项目；已是成员则幂等返回 |
+| GET | `/v1/invites/:token` | 公开 | 预览：项目、角色、有效期、剩余次数、项目群入口 |
+| POST | `/v1/invites/:token/accept` | 登录 | 加入项目；已是成员则幂等返回；尝试自动拉群并返回群入口 |
 | GET | `/v1/projects/:id/invites` | Maintainer+ | 邀请记录（不含明文 token） |
 | POST | `/v1/projects/:id/invites` | Owner | Body：`{ "role": "member", "maxUses": 50, "expiresInHours": 72 }` |
 | DELETE | `/v1/projects/:id/invites/:inviteId` | Owner | 撤销邀请 |
@@ -141,6 +141,46 @@ Body：
 }
 ```
 
+### 扫码入项目与入群
+
+`GET /v1/invites/:token` 的响应包含：
+
+```json
+{
+  "invite": {
+    "valid": true,
+    "project": { "id": "…", "name": "演示项目", "slug": "demo", "status": "active" },
+    "role": "member",
+    "group": {
+      "provider": "feishu",
+      "name": "演示项目群",
+      "chatId": "oc_…",
+      "joinUrl": "https://applink.feishu.cn/client/chat/open?openChatId=oc_…",
+      "qrDataUrl": "data:image/png;base64,…",
+      "autoJoin": true
+    }
+  }
+}
+```
+
+`POST /v1/invites/:token/accept` 在加入项目后还会尝试自动拉群：
+
+```json
+{
+  "project": { "…": "项目详情" },
+  "role": "member",
+  "alreadyMember": false,
+  "group": {
+    "group": { "provider": "feishu", "chatId": "oc_…", "joinUrl": "…", "qrDataUrl": "…", "autoJoin": true, "name": "演示项目群" },
+    "joined": true,
+    "error": "可选：自动拉群失败原因"
+  }
+}
+```
+
+- 自动拉群只在 IM 适配器实现 `addMembers` 时执行（当前为飞书，需 `im:chat.members:write_only` 且机器人为群管理员）。
+- 用户在当前 IM 平台没有身份（例如开发登录）、自动拉群失败或平台不支持（企业微信）时，`joined=false`，客户端展示 `qrDataUrl` / `joinUrl`，不会阻塞加入项目。
+
 ## 仓库与 GitHub App
 
 | 方法 | 路径 | 权限 | 说明 |
@@ -159,11 +199,13 @@ Body：
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/v1/projects/:id/channels` | Viewer+ | 绑定历史与当前 active 群 |
-| POST | `/v1/projects/:id/channels` | Owner | Body：`{ "provider": "feishu", "externalChatId": "oc_…", "name": "项目群", "config": {} }` |
+| POST | `/v1/projects/:id/channels` | Owner | Body：`{ "provider": "feishu", "externalChatId": "oc_…", "name": "项目群", "config": { "joinUrl": "https://…", "qrDataUrl": "data:image/png;base64,…", "autoJoin": true } }` |
 | DELETE | `/v1/projects/:id/channels/:channelId` | Owner | 停用绑定 |
 
 - `(provider, external_chat_id)` 全局唯一；一个群只能属于一个项目。
 - 一个项目同时只有一个 active 群；绑定新群会自动停用旧绑定。
+- `config.joinUrl` / `config.qrDataUrl` 用于新成员接受邀请后的入群入口；未知字段与非法 URL 会被丢弃。
+- `config.autoJoin` 控制飞书是否在邀请接受后自动拉群，默认开启。
 - 企业微信可在 `config.webhookUrl` 配置群机器人地址作为发送通道。
 
 ## 工单

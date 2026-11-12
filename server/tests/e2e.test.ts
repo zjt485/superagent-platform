@@ -120,6 +120,10 @@ describe('control plane API', () => {
     const accepted = await api(harness, 'POST', `/v1/invites/${token}/accept`, { cookie: bob.cookie })
     expect(accepted.status).toBe(201)
     expect(accepted.json.role).toBe('member')
+    // The response carries the group entry so the invite page can offer a QR or
+    // link (no Feishu adapter is configured in tests, so no auto-add).
+    expect(accepted.json.group?.group?.joinUrl).toContain('applink.feishu.cn')
+    expect(accepted.json.group?.joined).toBe(false)
 
     expect((await api(harness, 'GET', `/v1/projects/${a.projectId}`, { cookie: bob.cookie })).status).toBe(200)
     expect((await api(harness, 'GET', `/v1/projects/${b.projectId}`, { cookie: bob.cookie })).status).toBe(404)

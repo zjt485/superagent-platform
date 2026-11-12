@@ -523,6 +523,31 @@ export async function unbindRepo(deps: Deps, projectId: string, actor: { id: str
   await audit(deps, { projectId, actorId: actor.id, actorLabel: actor.name, action: 'repo.unbound', target: `project:${projectId}` })
 }
 
+/** Only known, validated group-entry settings are persisted. */
+export function sanitizeChannelConfig(
+  provider: 'feishu' | 'wecom',
+  config: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  if (!config) return result
+  const joinUrl = config.joinUrl
+  if (typeof joinUrl === 'string' && joinUrl.length <= 2000 && /^https?:\/\//i.test(joinUrl)) {
+    result.joinUrl = joinUrl
+  }
+  const qr = config.qrDataUrl
+  if (typeof qr === 'string' && qr.length <= 1_200_000 && (qr.startsWith('data:image/') || /^https?:\/\//i.test(qr))) {
+    result.qrDataUrl = qr
+  }
+  if (provider === 'wecom') {
+    const webhookUrl = config.webhookUrl
+    if (typeof webhookUrl === 'string' && webhookUrl.length <= 2000 && /^https?:\/\//i.test(webhookUrl)) {
+      result.webhookUrl = webhookUrl
+    }
+  }
+  if (typeof config.autoJoin === 'boolean') result.autoJoin = config.autoJoin
+  return result
+}
+
 export async function bindChannel(
   deps: Deps,
   projectId: string,
@@ -534,6 +559,7 @@ export async function bindChannel(
   if (access.project.status === 'archived') throw conflict('已归档项目不能绑定群')
   const externalChatId = input.externalChatId.trim()
   if (!externalChatId) throw conflict('群 ID 不能为空')
+  const nextConfig = input.config === undefined ? undefined : sanitizeChannelConfig(input.provider, input.config)
 
   const [existing] = await deps.db
     .select()
@@ -552,7 +578,7 @@ export async function bindChannel(
         .set({
           status: 'active',
           name: input.name?.trim() || existing.name,
-          config: input.config ?? existing.config,
+          config: nextConfig ?? existing.config,
           updatedAt: deps.now(),
         })
         .where(eq(channels.id, existing.id))
@@ -564,7 +590,7 @@ export async function bindChannel(
         externalChatId,
         name: input.name?.trim() || null,
         status: 'active',
-        config: input.config ?? {},
+        config: nextConfig ?? {},
         createdBy: actor.id,
         createdAt: deps.now(),
         updatedAt: deps.now(),

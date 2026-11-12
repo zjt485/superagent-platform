@@ -38,6 +38,12 @@ export interface ImAdapter {
   provider: ChannelProvider
   verifyAndParse(input: ImWebhookInput): Promise<ImWebhookResult>
   send(input: SendMessageInput): Promise<SendMessageResult>
+  /**
+   * Optional: add people to an existing chat after they accept a project
+   * invitation (§4.2 step 5). Platforms without this capability fall back to
+   * showing a group QR code / invite link.
+   */
+  addMembers?(input: { chatId: string; externalUserIds: string[] }): Promise<{ added: string[] }>
 }
 
 export type ImRegistry = Partial<Record<ChannelProvider, ImAdapter>>

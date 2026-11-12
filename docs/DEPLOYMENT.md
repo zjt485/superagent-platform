@@ -69,7 +69,7 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
 ## 3. 飞书接入（默认）
 
 1. 在飞书开放平台创建**企业自建应用**，启用「机器人」能力。
-2. 权限：至少 `im:message`（读取群消息）、`im:message:send_as_bot`（发送消息）、`im:chat:readonly`（读取群信息）；如需拉人/建群再申请对应权限（MVP 不使用）。
+2. 权限：至少 `im:message`（读取群消息）、`im:message:send_as_bot`（发送消息）、`im:chat:readonly`（读取群信息）。若希望成员接受邀请后**自动拉群**，额外申请 `im:chat.members:write_only`，并把机器人设为群管理员；否则成员会看到群二维码/链接。
 3. 事件订阅：
    - 请求地址：`https://<DOMAIN>/webhooks/feishu`；
    - 订阅事件：`im.message.receive_v1`；
@@ -83,6 +83,7 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
    - 可用应用凭据调用 `GET https://open.feishu.cn/open-apis/bot/v3/info`；
    - 不填时，适配器会把「任意 @ 提及」视为 @bot（不建议生产）。
 7. 获取群 `chat_id`（群设置或回调日志），在控制台「IM 群」页绑定；也可以让项目 Owner 在群里发送 `@bot /bind <项目标识>`。
+8. 在「IM 群」绑定表单里可上传**群二维码**、填写群邀请链接。新成员接受项目邀请后会看到「最后一步：加入项目群」：自动拉群成功则提示已入群，否则展示二维码/链接。
 
 > `PUBLIC_BASE_URL` 必须与飞书回调域名一致，否则 OAuth 回跳地址会错。
 
@@ -111,6 +112,7 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
    - 在控制台 IM 群页填写群 `chatid`。
 3. OAuth：应用可信域名配置 `<DOMAIN>`，网页授权回调 `https://<DOMAIN>/v1/auth/wecom/callback`。
 4. 若应用消息无法发到已有群，可在群内添加「群机器人」，把 Webhook 地址填到绑定的 `config.webhookUrl`。
+5. 企业微信不支持通过 API 把成员加入已有群：请上传群二维码或填写群邀请链接，成员接受项目邀请后扫码入群。
 
 **限制**：企业微信应用消息没有原生线程和可靠的 @bot 标识；当前适配器用文本 `@<WECOM_BOT_NAME>` 判定，工单线程续跑不可用。生产建议以飞书为主，或升级为企业微信「智能机器人」回调后再启用。
 
@@ -202,6 +204,8 @@ docker compose exec -T postgres pg_restore -U superagent -d superagent --clean -
 | GitHub PR 创建失败 | installation 是否授权该仓库；App 权限是否含 Contents/Pull requests；Worker 日志中的 git 错误 |
 | Worker 一直不领取 | 项目是否 active；是否达到 `maxConcurrentRuns`；队列驱动与 Redis 连接；Run 是否卡在 `running`（reaper 会在心跳超时后回收） |
 | 登录后看不到项目 | 是否通过邀请加入；身份 provider/external id 是否与入群账号一致 |
+| 接受邀请后没有自动进群 | 检查飞书应用是否有 `im:chat.members:write_only`、机器人是否为群管理员；`config.autoJoin` 是否为 true；失败时成员仍可扫码入群，审计里查 `channel.auto_join_failed` |
+| 入群二维码不显示 | 在「IM 群」绑定表单上传群二维码（<500KB）或填写群邀请链接；企业微信必须手动配置 |
 | 生产启动失败 `SESSION_SECRET must be at least 32 characters` | 补齐密钥；`AUTH_DEV_LOGIN` 必须为 false |
 
 ## 11. 安全检查清单

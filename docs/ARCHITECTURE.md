@@ -132,7 +132,7 @@ sequenceDiagram
 | `project_members` | project_id, user_id, role | 角色 owner/maintainer/member/viewer |
 | `repos` | project_id（唯一）, installation_id, owner, name, default_branch | 每项目一个仓库 |
 | `project_installations` | project_id, installation_id | GitHub App 安装与仓库选择之间的过渡记录 |
-| `channels` | project_id, provider, external_chat_id, status | 每个 provider+chat 唯一；每个项目最多一个 active 群 |
+| `channels` | project_id, provider, external_chat_id, status, config | 每个 provider+chat 唯一；每个项目最多一个 active 群；config 可存 `joinUrl`、`qrDataUrl`、`autoJoin`、企业微信群机器人 `webhookUrl` |
 | `invites` | token_hash, role, expires_at, max_uses, used_count | 只存 token 哈希，明文只在生成时返回 |
 | `tickets` | project_id, channel_id, thread_key, requester, title, body, status, plan, pr_url, branch | `(project, channel, thread_key)` 找活动工单 |
 | `messages` | provider, provider_message_id（唯一）, text, thread_key, is_bot | 绑定的项目群内的消息 |
@@ -251,7 +251,7 @@ Agent 不负责 push/PR：它只改工作区并写 `.superagent/result.json`。�
 | @bot 判定 | `mentions[].id.open_id == bot_open_id` | 文本中出现 `@<WECOM_BOT_NAME>` |
 | 线程 | 原生 thread/root；线程回复可续跑工单 | 无原生线程；每条消息独立，`allowThreadReplies` 实际不生效 |
 | 发消息 | `im/v1/messages` 或 reply 接口 | 群机器人 Webhook，或 `appchat/send` |
-| 建群/拉人 | 不实现，退化为绑定已有群 | 不实现 |
+| 建群/拉人 | 不自动建群；接受项目邀请后尝试自动拉群（需应用是群管理员且有成员权限），失败或未授权时展示群二维码 / 邀请链接 | 不自动建群；展示群二维码 / 邀请链接（可配置群机器人 Webhook 发送） |
 | OAuth | 飞书网页应用授权 | 企业微信 OAuth（snsapi_base） |
 
 企业微信适配器已完成协议与发送，但因平台能力限制，MVP 建议以飞书为主；后续接入「智能机器人」回调可补齐 @ 与线程语义。
@@ -286,4 +286,4 @@ Agent 不负责 push/PR：它只改工作区并写 `.superagent/result.json`。�
 | 计划审批可配置 | 小改动自动执行，高风险改动强制审批 |
 | 企业微信先做 Adapter | 方案要求默认飞书优先，企微留接口不变 |
 | 非 @ 消息也落库 | 线程判定与审计需要；只限绑定项目群，且不建单 |
-| 不做自动建群/拉人 | 平台 API 能力不一致，按方案退化为“绑定已有群” |
+| 不自动建群；飞书可选自动拉人 | 平台建群能力不一致，按方案退化为“绑定已有群”；入群优先自动拉人，失败回落到群二维码/链接 |

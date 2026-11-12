@@ -1819,6 +1819,39 @@ code,
   margin-top: 18px;
 }
 
+.invite-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.invite-group .form-actions {
+  margin-top: 0;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.invite-group .qr-panel {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface);
+}
+
+.invite-group .qr-panel img {
+  width: 148px;
+  height: 148px;
+}
+
+.invite-group .qr-panel__meta {
+  gap: 7px;
+}
+
 /* --------------------------------------------------------------------------
    Responsive
    -------------------------------------------------------------------------- */

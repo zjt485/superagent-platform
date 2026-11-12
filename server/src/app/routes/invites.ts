@@ -5,6 +5,7 @@ import { parseBody, pathParam, requireUser, uuidParam } from '../../http/helpers
 import { requireProjectAccess } from '../../services/access.js'
 import { acceptInvite, createInvite, listInvites, previewInvite, revokeInvite } from '../../services/invites.js'
 import { projectBundle } from '../../services/projects.js'
+import { joinProjectGroup } from '../../services/group-join.js'
 
 const createInviteSchema = z.object({
   role: z.enum(['maintainer', 'member', 'viewer']).default('member'),
@@ -22,11 +23,15 @@ export function registerInviteRoutes(app: FastifyInstance, ctx: AppContext): voi
     const user = requireUser(request)
     const token = pathParam(request, 'token')
     const result = await acceptInvite(ctx, token, user)
+    // §4.2 step 5: try to add the new member to the bound group; if the
+    // platform cannot do it, the response carries the group QR / invite link.
+    const group = await joinProjectGroup(ctx, result.projectId, user)
     reply.code(result.alreadyMember ? 200 : 201)
     return {
       project: await projectBundle(ctx, result.projectId, user),
       role: result.role,
       alreadyMember: result.alreadyMember,
+      group,
     }
   })
 

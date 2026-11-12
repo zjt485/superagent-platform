@@ -22,6 +22,13 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
     )
   }
   const data = state.data
+  const channelConfig = project.channel?.config ?? {}
+  const groupLink =
+    typeof channelConfig.joinUrl === 'string'
+      ? channelConfig.joinUrl
+      : project.channel?.provider === 'feishu'
+        ? `https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(project.channel.externalChatId)}`
+        : ''
   const activeTickets =
     (data.tickets.new ?? 0) + (data.tickets.triaged ?? 0) + (data.tickets.planned ?? 0) + (data.tickets.running ?? 0) + (data.tickets.waiting_review ?? 0)
   const budget = data.policy.dailyTokenBudget
@@ -94,6 +101,14 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
             <Badge tone={data.policy.retryOnFailure ? 'info' : 'neutral'} label={data.policy.retryOnFailure ? '失败自动重试一次' : '失败不重试'} />
             <Badge tone="brand" label={`单次超时 ${data.policy.maxRunMinutes} 分钟`} />
             <Badge tone="neutral" label="PR 不自动合并" />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+            {groupLink ? (
+              <a className="btn btn--sm" href={groupLink} target="_blank" rel="noreferrer">
+                打开项目群 ↗
+              </a>
+            ) : null}
+            <span className="small muted">群二维码 / 邀请链接在「IM 群」配置，新成员接受邀请后会看到入群入口。</span>
           </div>
         </Card>
 

@@ -13,11 +13,40 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
   const [chatId, setChatId] = useState('')
   const [name, setName] = useState('')
   const [webhookUrl, setWebhookUrl] = useState('')
+  const [joinUrl, setJoinUrl] = useState('')
+  const [qrDataUrl, setQrDataUrl] = useState('')
+  const [autoJoin, setAutoJoin] = useState(true)
+  const [qrError, setQrError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const items = state.data?.items ?? []
   const active = items.find((channel) => channel.status === 'active')
+  const activeConfig = active?.config ?? {}
+  const activeJoinUrl =
+    typeof activeConfig.joinUrl === 'string'
+      ? activeConfig.joinUrl
+      : active?.provider === 'feishu'
+        ? `https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(active.externalChatId)}`
+        : ''
+  const activeQr = typeof activeConfig.qrDataUrl === 'string' ? activeConfig.qrDataUrl : ''
+
+  const readQrFile = (file: File | undefined) => {
+    if (!file) return
+    if (file.size > 500_000) {
+      setQrError('二维码图片需小于 500KB，建议压缩后上传。')
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setQrDataUrl(reader.result)
+        setQrError(null)
+      }
+    }
+    reader.onerror = () => setQrError('图片读取失败，请重试。')
+    reader.readAsDataURL(file)
+  }
 
   const bind = async () => {
     setBusy(true)
@@ -27,12 +56,20 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
         provider,
         externalChatId: chatId.trim(),
         ...(name.trim() ? { name: name.trim() } : {}),
-        ...(provider === 'wecom' && webhookUrl.trim() ? { config: { webhookUrl: webhookUrl.trim() } } : {}),
+        config: {
+          ...(joinUrl.trim() ? { joinUrl: joinUrl.trim() } : {}),
+          ...(qrDataUrl ? { qrDataUrl } : {}),
+          ...(provider === 'feishu' ? { autoJoin } : {}),
+          ...(provider === 'wecom' && webhookUrl.trim() ? { webhookUrl: webhookUrl.trim() } : {}),
+        },
       })
       notify('群绑定成功', 'success')
       setChatId('')
       setName('')
       setWebhookUrl('')
+      setJoinUrl('')
+      setQrDataUrl('')
+      setQrError(null)
       state.reload()
       window.dispatchEvent(new Event('projects:changed'))
     } catch (cause) {
@@ -74,6 +111,32 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
                 <dt>绑定时间</dt>
                 <dd>{formatDate(active.createdAt)}</dd>
               </div>
+              <div>
+                <dt>入群方式</dt>
+                <dd>
+                  {active.provider === 'feishu' && activeConfig.autoJoin !== false
+                    ? '邀请成员后尝试自动拉群，失败时展示二维码 / 链接'
+                    : '展示群二维码 / 邀请链接'}
+                </dd>
+              </div>
+              {activeJoinUrl ? (
+                <div>
+                  <dt>群入口</dt>
+                  <dd>
+                    <a href={activeJoinUrl} target="_blank" rel="noreferrer">
+                      打开项目群 ↗
+                    </a>
+                  </dd>
+                </div>
+              ) : null}
+              {activeQr ? (
+                <div style={{ alignItems: 'center' }}>
+                  <dt>群二维码</dt>
+                  <dd>
+                    <img src={activeQr} alt="项目群二维码" style={{ width: 132, padding: 6, borderRadius: 8, background: '#fff' }} />
+                  </dd>
+                </div>
+              ) : null}
             </dl>
             {owner ? (
               <div className="form-actions">
@@ -116,6 +179,38 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
             <Field label="备注名称（可选）">
               <input className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：增长项目群" />
             </Field>
+            <Field label="群邀请链接（可选）" hint="成员接受项目邀请后会看到该链接。飞书不填时会生成 applink 群入口。">
+              <input className="input" value={joinUrl} onChange={(event) => setJoinUrl(event.target.value)} placeholder="https://..." />
+            </Field>
+            <Field label="群二维码（可选）" hint="在群设置里导出群二维码后上传；成员扫码入群，图片需小于 500KB。">
+              <input
+                className="input"
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(event) => readQrFile(event.target.files?.[0])}
+              />
+            </Field>
+            {qrDataUrl ? (
+              <div className="qr-panel" style={{ padding: 12 }}>
+                <img src={qrDataUrl} alt="群二维码预览" style={{ width: 120, height: 120 }} />
+                <div className="qr-panel__meta">
+                  <strong className="small">二维码预览</strong>
+                  <Button size="sm" variant="subtle" onClick={() => setQrDataUrl('')}>
+                    移除
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            <ErrorNotice message={qrError} />
+            {provider === 'feishu' ? (
+              <label className="checkbox-row">
+                <input type="checkbox" checked={autoJoin} onChange={(event) => setAutoJoin(event.target.checked)} />
+                <span>
+                  <strong>邀请后自动拉群</strong>
+                  <span>需要飞书应用具备 im:chat.members:write_only 权限并是群管理员；失败时自动展示二维码 / 链接。</span>
+                </span>
+              </label>
+            ) : null}
             {provider === 'wecom' ? (
               <Field label="群机器人 Webhook（可选）" hint="企业微信应用消息无法直接发到已有群时，可配置群机器人 Webhook 作为发送通道。">
                 <input className="input" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />

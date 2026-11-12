@@ -161,6 +161,24 @@ export class FeishuAdapter implements ImAdapter, OAuthProvider {
     return { messageId: asString(data.message_id) }
   }
 
+  /**
+   * Adds project members to the bound Feishu chat. Requires the app to be a
+   * group admin and to hold `im:chat.members:write_only`.
+   */
+  async addMembers(input: { chatId: string; externalUserIds: string[] }): Promise<{ added: string[] }> {
+    if (input.externalUserIds.length === 0) return { added: [] }
+    const token = await this.tenantToken()
+    await this.request<Json>(
+      `/open-apis/im/v1/chats/${encodeURIComponent(input.chatId)}/members?member_id_type=open_id`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ id_list: input.externalUserIds }),
+      },
+      token,
+    )
+    return { added: input.externalUserIds }
+  }
+
   private async tenantToken(): Promise<string> {
     if (this.token && this.token.expiresAt > Date.now() + 60_000) return this.token.value
     if (!this.options.appId || !this.options.appSecret) {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, ApiError } from '../api'
+import { api, ApiError, type GroupJoinOutcome } from '../api'
 import { useSession } from '../session'
-import { Avatar, Button, ErrorNotice, ErrorState, Spinner, useToast } from '../components'
-import { ROLE_LABELS, formatDate } from '../format'
+import { Avatar, Badge, Button, ErrorNotice, ErrorState, Spinner, useToast } from '../components'
+import { PROVIDER_LABELS, ROLE_LABELS, formatDate } from '../format'
 
 const REASONS: Record<string, string> = {
   not_found: '邀请不存在或链接不完整。',
@@ -22,6 +22,8 @@ export function InvitePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [joinOutcome, setJoinOutcome] = useState<GroupJoinOutcome | null>(null)
+  const [acceptedProjectId, setAcceptedProjectId] = useState<string | null>(null)
 
   const load = () => {
     if (!token) return
@@ -52,9 +54,17 @@ export function InvitePage() {
     setError(null)
     try {
       const result = await api.invites.accept(token)
-      notify(result.alreadyMember ? '你已经是项目成员' : '已加入项目', 'success')
       window.dispatchEvent(new Event('projects:changed'))
-      navigate(`/projects/${result.project.id}`, { replace: true })
+      setAcceptedProjectId(result.project.id)
+      if (result.group?.group) {
+        // Stay on the invitation page so the new member can scan the group QR
+        // or open the group link before entering the console.
+        setJoinOutcome(result.group)
+        notify(result.group.joined ? '已加入项目，并自动加入项目群' : '已加入项目', 'success')
+      } else {
+        notify(result.alreadyMember ? '你已经是项目成员' : '已加入项目', 'success')
+        navigate(`/projects/${result.project.id}`, { replace: true })
+      }
     } catch (cause) {
       setError(cause instanceof ApiError ? cause.message : '加入失败')
     } finally {
@@ -110,21 +120,70 @@ export function InvitePage() {
               </div>
               <div>
                 <dt>项目群入口</dt>
-                <dd>{preview.chatProvider ? '已绑定 IM 群，加入后可在控制台查看' : '项目尚未绑定群'}</dd>
+                <dd>
+                  {preview.group
+                    ? `${PROVIDER_LABELS[preview.group.provider] ?? preview.group.provider} · ${preview.group.name ?? preview.group.chatId}（加入后可扫码/点链接入群）`
+                    : preview.chatProvider
+                      ? '已绑定 IM 群，加入后可在控制台查看'
+                      : '项目尚未绑定群'}
+                </dd>
               </div>
             </dl>
             {user ? (
-              <>
-                <div className="notice notice--info" style={{ marginTop: 16 }}>
-                  当前登录：{user.name}。加入后你可以在控制台查看项目，并在群内 @bot 提需求。
+              joinOutcome ? (
+                <div className="invite-group">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <strong>{joinOutcome.joined ? '已自动加入项目群' : '最后一步：加入项目群'}</strong>
+                    <Badge tone={joinOutcome.joined ? 'success' : 'warning'} label={joinOutcome.joined ? '已入群' : '待入群'} />
+                  </div>
+                  {joinOutcome.group ? (
+                    <div className="qr-panel" style={{ padding: 12 }}>
+                      {!joinOutcome.joined && joinOutcome.group.qrDataUrl ? (
+                        <img src={joinOutcome.group.qrDataUrl} alt="项目群二维码" style={{ width: 148, height: 148 }} />
+                      ) : null}
+                      <div className="qr-panel__meta">
+                        <strong style={{ fontSize: 13 }}>
+                          {PROVIDER_LABELS[joinOutcome.group.provider] ?? joinOutcome.group.provider} · {joinOutcome.group.name ?? '项目群'}
+                        </strong>
+                        <span className="small muted">
+                          {joinOutcome.joined
+                            ? '你已在项目群中，可以直接在群里 @bot 提需求。'
+                            : joinOutcome.group.qrDataUrl
+                              ? '请用手机扫码加入项目群，或在下方打开群链接。'
+                              : '管理员还没有上传群二维码，可先打开群链接或联系 Owner。'}
+                        </span>
+                        {joinOutcome.error ? (
+                          <span className="small" style={{ color: 'var(--warning)' }}>
+                            自动拉群未成功：{joinOutcome.error}
+                          </span>
+                        ) : null}
+                        {joinOutcome.group.joinUrl ? (
+                          <a className="btn btn--sm btn--primary" href={joinOutcome.group.joinUrl} target="_blank" rel="noreferrer">
+                            打开项目群 ↗
+                          </a>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="form-actions">
+                    <Button variant="primary" onClick={() => acceptedProjectId && navigate(`/projects/${acceptedProjectId}`, { replace: true })}>
+                      进入项目控制台
+                    </Button>
+                  </div>
                 </div>
-                <ErrorNotice message={error} />
-                <div className="form-actions">
-                  <Button variant="primary" onClick={accept} loading={busy}>
-                    接受邀请并加入
-                  </Button>
-                </div>
-              </>
+              ) : (
+                <>
+                  <div className="notice notice--info" style={{ marginTop: 16 }}>
+                    当前登录：{user.name}。加入后你可以在控制台查看项目，并在群内 @bot 提需求。
+                  </div>
+                  <ErrorNotice message={error} />
+                  <div className="form-actions">
+                    <Button variant="primary" onClick={accept} loading={busy}>
+                      接受邀请并加入
+                    </Button>
+                  </div>
+                </>
+              )
             ) : (
               <>
                 <div className="notice notice--info" style={{ marginTop: 16 }}>
