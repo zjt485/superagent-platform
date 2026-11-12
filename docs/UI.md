@@ -7,9 +7,10 @@
 ```text
 /login                     登录（飞书 / 企业微信 OAuth，或开发登录）
 /invite/:token             邀请预览、接受；接受后展示项目群二维码/链接（或自动入群结果）
+/join/:token              企业微信扫码入群页；登录后自动加入项目并拉入应用群
 /                          项目列表 + 新建项目
 /projects/:id              项目工作台
-  ?tab=overview            概览：统计、交付配置、最近工单、活跃 Turn
+  ?tab=overview            概览：统计、企业微信扫码入群、交付配置、最近工单、活跃 Turn
   ?tab=session             Main Session：状态、模型、transcript、Eval Turns
   ?tab=tickets             工单列表、筛选、分页、新建
   ?tab=members             成员、角色、添加/移除
@@ -68,6 +69,7 @@
 | 项目列表 | `docs/screenshots/02-projects.png` |
 | 项目概览 | `docs/screenshots/03-project-overview.png` |
 | Main Session | `docs/screenshots/03b-main-session.png` |
+| 企业微信扫码入群 | `docs/screenshots/03c-wecom-join.png`、`03d-wecom-joined.png` |
 | 工单列表 | `docs/screenshots/04-tickets.png` |
 | 工单详情 | `docs/screenshots/05-ticket.png` |
 | 邀请与二维码 | `docs/screenshots/06-invites.png`、`06b-invite-qr.png`、`07e-invite.png`、`07f-invite-group.png`（扫码入群） |

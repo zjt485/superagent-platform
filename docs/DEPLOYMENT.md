@@ -114,8 +114,46 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
 4. 若应用消息无法发到已有群，可在群内添加「群机器人」，把 Webhook 地址填到绑定的 `config.webhookUrl`。
 5. 企业微信**已有群**不支持通过 API 加人：请上传群二维码或填写群邀请链接，成员接受项目邀请后扫码入群。
 6. 如果想自动拉群，使用应用通过 `appchat/create` 创建的自建群，把对应 `chatid` 绑定到项目，并在「IM 群」勾选“邀请后自动拉群”。平台会用 `appchat/get` 读取现有成员、合并新成员后 `appchat/update`；普通已有群会失败并自动回落到二维码/链接。
+7. **群内 @ 机器人**：企业微信自建应用（appchat）只能向群发消息，官方不支持接收普通群消息。请额外创建一个「智能机器人」，使用长连接模式，并把它加入项目群一次（企业微信没有 API 可自动拉机器人进群）。平台用 `@wecom/aibot-node-sdk` 接收 @ 消息、发送回复；appchat 仍负责建群、OAuth 和拉人。
 
-**限制**：企业微信应用消息没有原生线程和可靠的 @bot 标识；当前适配器用文本 `@<WECOM_BOT_NAME>` 判定，工单线程续跑不可用（用 `/status` 等命令或控制台操作）。已有群不能通过 API 加人；自动拉群只对 `appchat` 自建群有效。生产建议以飞书为主，或升级为企业微信「智能机器人」回调后再启用。
+### 5.1 真实扫码入群流程（appchat 应用群）
+
+企业微信没有给普通内部群生成“入群二维码”的 API。平台使用应用自建群：
+
+1. 项目创建并绑定 GitHub 仓库；
+2. 在项目详情页点击「创建企业微信群并生成二维码」：
+   - 用当前 Owner 的企业微信 userid 调 `appchat/create`；
+   - 群名 `${项目名} · Superagent`，成员包含项目内已有企业微信身份；
+   - 保存 `chatid`，绑定为项目群，若项目是 draft 且有仓库则自动 active；
+3. 页面展示平台签名二维码（90 天，链接为 `/join/<token>`）；
+4. 用户用企业微信扫码 → 打开平台入群页 → 企业微信 OAuth 登录；
+5. 平台加入项目成员，并用 `appchat/get` + `appchat/update` 把该 userid 合并进应用群；
+6. 群主在群里添加一次「智能机器人」（群设置 → 群机器人 / 智能机器人），把 BotID/Secret 配到 `.env`：
+
+   ```env
+   WECOM_BOT_ID=
+   WECOM_BOT_SECRET=
+   # 私有部署才需要
+   WECOM_BOT_WS_URL=
+   ```
+
+   API 进程启动后会自动建立 WebSocket 长连接；群内 @ 机器人会进入 Main Session。回复通过智能机器人发送，appchat 仅用于建群/OAuth/拉人。一个 BotID 同时只能有一条长连接，因此启用 Bot 时 API 不要多副本。
+
+7. 用户可在群里 @机器人 提需求，Main/Executor 双 Agent 对绑定的 GitHub 仓库工作。智能机器人回调的 `chatid` 必须与绑定项目的 `externalChatId` 一致；如果先在群里手动建群并加机器人，用群内 `/bind <项目slug>` 绑定。
+
+权限/配置要求：
+
+- 自建应用可见范围包含 Owner 和所有扫码成员；
+- `WECOM_CORP_ID`、`WECOM_SECRET` 有效（appchat 与 OAuth 都用 corp secret）；
+- `WECOM_BOT_ID` / `WECOM_BOT_SECRET`：智能机器人长连接凭证；管理员后台把机器人 API 模式设为「长连接」；
+- `PUBLIC_BASE_URL` 与企业微信可信域名一致，且必须是 HTTPS；
+- 已有群（非应用创建）无法通过 API 拉人：项目详情页会提示先解绑，或继续上传群二维码/邀请链接。
+
+**限制**：
+
+- 企业微信应用消息没有原生线程；智能机器人只会在群内被 @（或单聊）时推送消息，因此线程追问也需要 @ 机器人，不能像飞书那样自动收普通回复。
+- appchat 群本身不能接收群消息；必须使用智能机器人。机器人加入群需要群主手动操作一次（企业微信未开放自动拉机器人入群的 API）。
+- 智能机器人回调的 `from.userid` 对非超级管理员可能返回**加密 userid**，与 OAuth 的明文 userid 不一致。当前平台按 OAuth 身份匹配成员；若你的企业返回加密 ID，需要额外做身份绑定（尚未实现），否则会表现为“消息被忽略/不是成员”。联调时先确认回调 userid 与 OAuth userid 是否一致。
 
 ## 6. Agent Runtime 接入（双 Session）
 

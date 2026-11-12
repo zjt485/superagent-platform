@@ -21,6 +21,7 @@
     "@fastify/cookie": "^11.0.2",
     "@fastify/rate-limit": "^10.2.2",
     "@fastify/static": "^8.0.4",
+    "@wecom/aibot-node-sdk": "^1.0.7",
     "bullmq": "^5.34.0",
     "drizzle-orm": "^0.44.0",
     "fast-xml-parser": "^5.0.9",

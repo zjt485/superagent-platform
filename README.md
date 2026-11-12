@@ -31,7 +31,7 @@ pnpm demo           # 初始化演示数据、跑通一次工单，并在 :3100 
 演示会：
 
 1. 创建项目「演示项目」，绑定 Mock 仓库 `demo-org/hello-world` 和飞书群 `oc_demo_project`；
-2. 生成一条邀请链接，接受后会显示项目群二维码与入群链接；
+2. 生成一条邀请链接，并创建「企微扫码演示」项目：项目详情页直接显示企业微信扫码入群二维码（演示使用模拟 appchat 群；配置真实 corp 凭据与智能机器人后走同一接口）；
 3. 模拟一条 @bot 消息进入 **Main Session**，由它做 Decision 创建工单和 Mandate；
 4. **Executor Session** 领取 Turn，在工作区产生真实文件改动，平台提交到 `agent/*` 分支并创建 Mock PR；
 5. 把「已接单」「PR 已创建」推送到模拟飞书群（终端输出）。
@@ -62,8 +62,8 @@ pnpm check      # typecheck + test + build
 | --- | --- |
 | 多项目 / 单仓库 | 项目绑定一个 GitHub 仓库；项目间数据按 `project_id` 隔离 |
 | 成员与角色 | Owner / Maintainer / Member / Viewer；邀请二维码、角色变更、移除 |
-| 扫码入项目 + 入群 | 扫项目邀请二维码 → OAuth 登录 → 加入项目；随后展示项目群二维码/邀请链接，飞书可自动拉群 |
-| IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信（回调验签/解密、OAuth、群机器人发送、应用自建群自动拉群、群二维码兜底） |
+| 扫码入项目 + 入群 | 项目邀请二维码 → OAuth 登录 → 加入项目；企业微信应用群可在项目详情页直接展示扫码入群二维码，扫码后自动加入项目与项目群 |
+| IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信（appchat 建群/拉人、OAuth、群二维码；**智能机器人长连接**接收群内 @ 与回复） |
 | @bot 接单 | Main Session 只评估项目成员的 @bot Trigger；非 @、非成员、非项目群忽略；线程回复直接作为 Input |
 | 命令 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` |
 | Main Session | 每项目一个持久 Session；Eval → Decision（accept/ignore/attach/stop）→ Ticket + Mandate + 回复 |
@@ -131,6 +131,10 @@ platform/
 | Main Session | 工单 / Executor Session |
 | --- | --- |
 | ![Main Session](docs/screenshots/03b-main-session.png) | ![工单](docs/screenshots/05-ticket.png) |
+
+| 企业微信扫码入群 | 扫码后自动入群 |
+| --- | --- |
+| ![企业微信扫码](docs/screenshots/03c-wecom-join.png) | ![已入群](docs/screenshots/03d-wecom-joined.png) |
 
 | 邀请二维码 | 扫码入群 |
 | --- | --- |

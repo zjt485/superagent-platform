@@ -8,6 +8,7 @@ import { ProjectPage } from './pages/ProjectPage'
 import { TicketPage } from './pages/TicketPage'
 import { LoginPage } from './pages/LoginPage'
 import { InvitePage } from './pages/InvitePage'
+import { WecomJoinPage } from './pages/WecomJoinPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import './styles.css'
 
@@ -150,6 +151,7 @@ export function App() {
           <Routes>
             <Route path="/login" element={<LoginRoute />} />
             <Route path="/invite/:token" element={<InvitePage />} />
+            <Route path="/join/:token" element={<WecomJoinPage />} />
             <Route
               path="/*"
               element={

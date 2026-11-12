@@ -234,6 +234,28 @@ export interface MainSessionView {
   turns: Run[]
 }
 
+export interface ProjectJoinLink {
+  token: string
+  url: string
+  qrDataUrl: string
+  expiresAt: string
+}
+
+export interface WecomGroupSetup {
+  project: ProjectBundle
+  channel: Channel
+  group: { chatId: string; name: string; managed: boolean; autoJoin: boolean }
+  join: ProjectJoinLink
+}
+
+export interface JoinPreview {
+  valid: boolean
+  reason?: string
+  project?: { id: string; name: string; slug: string; status: string }
+  group?: { provider: 'wecom'; chatId: string; name: string | null; managed: boolean }
+  expiresAt?: string
+}
+
 export interface Member {
   id: string
   userId: string
@@ -383,6 +405,10 @@ export const api = {
     audit: (projectId: string, limit = 100) => request<{ items: AuditEntry[] }>(`/v1/projects/${projectId}/audit?limit=${limit}`),
     usage: (projectId: string, days = 30) => request<{ series: UsageDay[]; todayTokens: number; policy: Policy }>(`/v1/projects/${projectId}/usage?days=${days}`),
     mainSession: (projectId: string) => request<MainSessionView>(`/v1/projects/${projectId}/main-session`),
+    createWecomGroup: (projectId: string) =>
+      request<WecomGroupSetup>(`/v1/projects/${projectId}/wecom-group`, { method: 'POST' }),
+    joinLink: (projectId: string) =>
+      request<{ channel: Channel | null; join: ProjectJoinLink | null; reason?: string }>(`/v1/projects/${projectId}/join-link`),
   },
 
   tickets: {
@@ -444,6 +470,15 @@ export const api = {
         `/v1/projects/${projectId}/repo/candidates${installationId ? `?installationId=${encodeURIComponent(installationId)}` : ''}`,
       ),
     installUrl: (projectId: string) => `/v1/github/install/start?projectId=${encodeURIComponent(projectId)}`,
+  },
+
+  wecomJoin: {
+    preview: (token: string) => request<JoinPreview>(`/v1/join/${encodeURIComponent(token)}`),
+    accept: (token: string) =>
+      request<{ projectId: string; role: MemberRole; alreadyMember: boolean; group: GroupJoinOutcome }>(
+        `/v1/join/${encodeURIComponent(token)}/accept`,
+        { method: 'POST' },
+      ),
   },
 
   invites: {

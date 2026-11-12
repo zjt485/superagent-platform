@@ -41,8 +41,23 @@ Base URL：`PUBLIC_BASE_URL`。控制台使用 HttpOnly `sa_session` Cookie；�
 | GET/POST/DELETE | `/v1/projects/:id/repo` | 仓库绑定 |
 | GET | `/v1/projects/:id/repo/candidates` | GitHub App 已授权仓库 |
 | GET | `/v1/github/install/start` / `/v1/github/install/callback` | GitHub App 安装 |
-| GET/POST | `/v1/projects/:id/channels` | 群绑定，`config` 支持 `joinUrl`、`qrDataUrl`、`autoJoin`、WeCom `webhookUrl` |
+| GET/POST | `/v1/projects/:id/channels` | 群绑定，`config` 支持 `joinUrl`、`qrDataUrl`、`autoJoin`、`managed`、WeCom `webhookUrl` |
 | DELETE | `/v1/projects/:id/channels/:channelId` | 停用群 |
+
+### 企业微信扫码入群（真实 appchat）
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| POST | `/v1/projects/:id/wecom-group` | Owner | 要求已绑定仓库；用当前 Owner 的企业微信 userid 通过 `appchat/create` 建应用群，绑定为项目群并自动激活项目；返回 `{ project, channel, group, join }` |
+| GET | `/v1/projects/:id/join-link` | Maintainer+ | 已绑定应用群时返回 `{ channel, join }`；`join` 为签名二维码（90 天），否则 `{ join: null, reason }` |
+| GET | `/v1/join/:token` | 公开 | 预览入群二维码：项目、群、有效期 |
+| POST | `/v1/join/:token/accept` | 登录 | 加入项目（member），并调用 `appchat/update` 把当前企业微信 userid 加入应用群；返回 `{ projectId, role, alreadyMember, group }` |
+
+- 二维码是**平台签名链接**，不是企业微信原生群二维码；企业微信没有为普通内部群生成入群二维码的 API。
+- 只有 `appchat/create` 创建的**应用群**支持 API 拉人；绑定已有群时 `join` 为 null，需解绑后创建应用群，或继续用群二维码/邀请链接。
+- 扫码者必须通过企业微信 OAuth 登录，且在企业微信应用可见范围内，否则只能加入项目、无法自动进群。
+- 应用群创建时会把项目内已有企业微信身份成员一并拉入；Owner 必须已有企业微信身份。
+- 群内 @ 机器人需要另外配置企业微信「智能机器人」长连接（`WECOM_BOT_ID`/`WECOM_BOT_SECRET`），并由群主把机器人加入应用群一次；appchat 只能发送，不能接收群消息。智能机器人回调的 `from.userid` 可能是加密 ID，若与 OAuth 的明文 userid 不一致，需要额外的身份映射（当前未实现，见 STATUS 已知限制）。
 
 ## 邀请与入群
 

@@ -545,6 +545,7 @@ export function sanitizeChannelConfig(
     }
   }
   if (typeof config.autoJoin === 'boolean') result.autoJoin = config.autoJoin
+  if (typeof config.managed === 'boolean') result.managed = config.managed
   return result
 }
 

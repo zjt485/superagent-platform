@@ -10,6 +10,7 @@ import type { AppContext } from './app/context.js'
 import { loginWithIdentity } from './services/auth.js'
 import { addMemberByUserId, bindChannel, bindRepo, createProject, updateProject } from './services/projects.js'
 import { createInvite } from './services/invites.js'
+import { createManagedWecomGroup } from './services/wecom-join.js'
 import { flushOutbox } from './services/outbox.js'
 import { receiveTrigger } from './dual/engine.js'
 import { claimNextTurn } from './dual/sessions.js'
@@ -21,6 +22,7 @@ import { and, desc, eq } from 'drizzle-orm'
 import QRCode from 'qrcode'
 import { channels, identities, projects, tickets } from './db/schema.js'
 import type { ChannelProvider } from './domain/status.js'
+import type { ImAdapter } from './domain/im.js'
 import { newId } from './domain/ids.js'
 
 loadLocalEnv()
@@ -68,17 +70,51 @@ const consoleSender = {
   },
 }
 ctx.senders.set('feishu', consoleSender)
+ctx.senders.set('wecom', {
+  provider: 'wecom',
+  async send(input) {
+    process.stdout.write(`\n[模拟企业微信 ${input.chatId}] ${input.text.replace(/\n/g, '\n    ')}\n`)
+    return { messageId: `demo_wc_${Date.now()}` }
+  },
+})
 
-async function linkDevIdentity(userId: string, externalId: string, name: string): Promise<void> {
+// The demo has no real CorpID, so it uses an app-chat-shaped fake adapter. The
+// real adapter implements the same createChat/addMembers calls with WeCom.
+const demoWecomGroups = new Map<string, string[]>()
+const demoWecomAdapter: ImAdapter = {
+  provider: 'wecom',
+  async verifyAndParse() {
+    return { events: [], deliveryIds: [] }
+  },
+  async send(input) {
+    process.stdout.write(`\n[模拟企业微信 ${input.chatId}] ${input.text.replace(/\n/g, '\n    ')}\n`)
+    return { messageId: `demo_wc_${Date.now()}` }
+  },
+  async createChat(input) {
+    const chatId = `wc_demo_${Math.random().toString(36).slice(2, 10)}`
+    demoWecomGroups.set(chatId, [...new Set([input.ownerUserId, ...input.userIds])])
+    return { chatId }
+  },
+  async addMembers(input) {
+    const current = new Set(demoWecomGroups.get(input.chatId) ?? [])
+    const added = input.externalUserIds.filter((id) => !current.has(id))
+    for (const id of added) current.add(id)
+    demoWecomGroups.set(input.chatId, [...current])
+    return { added }
+  },
+}
+ctx.im = { wecom: demoWecomAdapter }
+
+async function linkIdentity(userId: string, provider: string, externalId: string, name: string): Promise<void> {
   const [existing] = await handle.db
     .select({ id: identities.id })
     .from(identities)
-    .where(and(eq(identities.provider, 'dev'), eq(identities.externalId, externalId)))
+    .where(and(eq(identities.provider, provider), eq(identities.externalId, externalId)))
   if (existing) return
   await handle.db.insert(identities).values({
     id: newId(),
     userId,
-    provider: 'dev',
+    provider,
     externalId,
     displayName: name,
     createdAt: new Date(),
@@ -92,8 +128,10 @@ if (existingProjects.length === 0) {
   // demo login return the same users.
   const alice = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_alice', name: 'Alice' })
   const bob = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_bob', name: 'Bob' })
-  await linkDevIdentity(alice.id, 'dev-alice', 'Alice')
-  await linkDevIdentity(bob.id, 'dev-bob', 'Bob')
+  await linkIdentity(alice.id, 'dev', 'dev-alice', 'Alice')
+  await linkIdentity(bob.id, 'dev', 'dev-bob', 'Bob')
+  await linkIdentity(alice.id, 'wecom', 'wx_alice', 'Alice')
+  await linkIdentity(bob.id, 'wecom', 'wx_bob', 'Bob')
 
   const project = await createProject(ctx, alice, {
     name: '演示项目',
@@ -103,6 +141,16 @@ if (existingProjects.length === 0) {
   await bindChannel(ctx, project.id, alice, { provider: 'feishu', externalChatId: 'oc_demo_project', name: '演示项目群' })
   await updateProject(ctx, project.id, alice, { status: 'active' })
   await addMemberByUserId(ctx, project.id, alice, { userId: bob.id, role: 'member' })
+
+  // A second project demonstrates the real WeCom scan-to-join flow with a
+  // simulated app-chat adapter.
+  const wecomProject = await createProject(ctx, alice, {
+    name: '企微扫码演示',
+    description: '扫描项目详情页的二维码，使用企业微信登录后自动加入项目群。',
+  })
+  await bindRepo(ctx, wecomProject.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world', defaultBranch: 'main' })
+  await addMemberByUserId(ctx, wecomProject.id, alice, { userId: bob.id, role: 'member' })
+  const wecomSetup = await createManagedWecomGroup(ctx, wecomProject.id, alice)
 
   const invite = await createInvite(ctx, project.id, alice, { role: 'member', maxUses: 20, expiresInHours: 72 })
   await receiveTrigger(ctx, {
@@ -136,8 +184,10 @@ if (existingProjects.length === 0) {
       `  项目：${project.name} (${project.slug})`,
       `  工单：${finalTicket?.title ?? '（无）'} → ${finalTicket?.stage ?? finalTicket?.status ?? '（无）'}`,
       `  PR：${finalTicket?.prUrl ?? '（未生成）'}`,
+      `  企业微信演示项目：${wecomProject.name} → ${wecomSetup.join.url}`,
+      '  企业微信群为演示适配器模拟；配置 WECOM_CORP_ID/SECRET 后使用真实 appchat。',
       '',
-      '打开控制台后用开发登录：昵称 Alice（Owner）或 Bob（Member）。',
+      '打开控制台后用开发登录：昵称 Alice（Owner）或 Bob（Member）；「企微扫码演示」项目详情页可看到扫码入群二维码。',
       '',
     ].join('\n'),
   )

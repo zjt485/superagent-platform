@@ -134,8 +134,25 @@ try {
   await shot('02-projects')
 
   const projects = await evaluate(`fetch('/v1/projects', { credentials: 'include' }).then((response) => response.json())`)
-  const projectId = projects.items?.[0]?.id
+  const demoProject = projects.items?.find((project) => !String(project.name).includes('企微')) ?? projects.items?.[0]
+  const projectId = demoProject?.id
   if (!projectId) throw new Error('no demo project found')
+
+  const wecomProject = projects.items?.find((project) => String(project.name).includes('企微'))
+  if (wecomProject) {
+    await navigate(`${BASE}/projects/${wecomProject.id}`)
+    await sleep(700)
+    await shot('03c-wecom-join')
+    const joinLink = await evaluate(
+      `fetch('/v1/projects/${wecomProject.id}/join-link', { credentials: 'include' }).then((response) => response.json())`,
+    )
+    if (joinLink?.join?.token) {
+      await navigate(`${BASE}/join/${encodeURIComponent(joinLink.join.token)}`)
+      await sleep(1800)
+      await shot('03d-wecom-joined')
+    }
+  }
+
   await navigate(`${BASE}/projects/${projectId}`)
   await shot('03-project-overview')
 

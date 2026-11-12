@@ -11,6 +11,7 @@ import { userBySession } from '../services/auth.js'
 import { registerAuthRoutes } from './routes/auth.js'
 import { registerProjectRoutes } from './routes/projects.js'
 import { registerInviteRoutes } from './routes/invites.js'
+import { registerJoinRoutes } from './routes/join.js'
 import { registerRepoRoutes } from './routes/repo.js'
 import { registerChannelRoutes } from './routes/channels.js'
 import { registerTicketRoutes } from './routes/tickets.js'
@@ -25,6 +26,8 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     loggerInstance: ctx.log as unknown as FastifyBaseLogger,
     trustProxy: ctx.config.TRUST_PROXY,
     bodyLimit: 4 * 1024 * 1024,
+    // Signed join/invite tokens are longer than Fastify's default 100 chars.
+    routerOptions: { maxParamLength: 2048 },
   })
 
   app.decorateRequest('user', null)
@@ -111,6 +114,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   registerAuthRoutes(app, ctx)
   registerProjectRoutes(app, ctx)
   registerInviteRoutes(app, ctx)
+  registerJoinRoutes(app, ctx)
   registerRepoRoutes(app, ctx)
   registerChannelRoutes(app, ctx)
   registerTicketRoutes(app, ctx)

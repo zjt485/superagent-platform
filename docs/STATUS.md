@@ -2,7 +2,7 @@
 
 核心已从“确定性路由 + plan/execute Runs”重写为 **Main Session / Executor Session 双 Agent**。旧的 `runs` / `run_events` 表和代码已删除（迁移 0004）。服务壳（项目、成员、邀请、IM、GitHub、控制台、Outbox、审计）复用。
 
-测试：`pnpm test`，当前 **45 tests / 9 files**。
+测试：`pnpm test`，当前 **54 tests / 11 files**。
 
 ## 1. 功能需求
 
@@ -12,8 +12,8 @@
 | FR-02 | GitHub App 绑定、installation、选仓库 | ✅ | `github/client.ts`、`routes/repo.ts`；Mock 模式服务测试；真实 App 需凭据联调 |
 | FR-03 | 成员、角色、邀请、移除 | ✅ 基本完成 | `services/projects.ts`、`invites.ts`；**无所有权转移** |
 | FR-04 | 邀请二维码、签名 token、过期/次数 | ✅ | `services/invites.ts`；`service.test.ts`、`group-join.test.ts` |
-| FR-05 | IM 群绑定、群内 `/bind`、扫码入群 | ✅ | `bindChannel`、dual intake、`services/group-join.ts`；飞书/企微自建群自动拉群，已有群二维码兜底 |
-| FR-06 | @bot 接单、命令、线程回复 | ✅ | `services/intake.ts` → `dual/engine.receiveTrigger`；只处理成员 @bot；线程 Input 绕过 Eval |
+| FR-05 | IM 群绑定、群内 `/bind`、扫码入群 | ✅ | `bindChannel`、dual intake、`services/group-join.ts`；**企业微信应用群**在项目详情页展示签名二维码，扫码 OAuth 后 `appchat/update` 自动入群；飞书同理；已有群二维码兜底 |
+| FR-06 | @bot 接单、命令、线程回复 | ✅ | 飞书走回调；企业微信走智能机器人长连接（`im/wecom-bot.ts`，自建 appchat 不能收群消息）；只处理成员 @bot；线程 Input 绕过 Eval |
 | FR-07 | 工单生命周期 | ✅ | `tickets.stage`：queued/working/plan_review/idle/review/blocked/failed/answer/done/cancelled；`dual-core.test.ts`、`service.test.ts` |
 | FR-08 | 队列、Worker、超时、重试、取消、日志 | ✅ | `session_turns`、`claimNextTurn`、`executeTurn`、`reapStaleTurns`、`turn_events`；测试覆盖失败重试与取消 |
 | FR-09 | 分支、commit、PR、评论、CI | ✅（真实 API 待联调） | `dual/worker.ts` 交付 PR；`services/github-webhooks.ts`；Mock PR + merge/comment 路径 |
@@ -40,7 +40,7 @@
 | # | 标准 | 结果 | 证据 |
 | --- | --- | --- | --- |
 | 1 | 创建项目、绑定仓库/群、生成二维码 | ✅ | `service.test.ts` 认证/邀请流程 |
-| 2 | 扫码登录加入项目，看到项目入口 | ✅ | 邀请接受 + 群入口响应；`group-join.test.ts` |
+| 2 | 扫码登录加入项目，看到项目入口 | ✅ | 邀请接受 + 群入口；**企业微信应用群**扫码后自动加入项目与群（`wecom-join.test.ts`），已有群退回二维码/链接 |
 | 3 | @bot 5 秒内回执并生成 Ticket | ✅ | Webhook 只做确定性入库；Main Turn 异步执行；Outbox 1s |
 | 4 | Executor 完成修改并开 PR，群里收到链接 | ✅ | `service.test.ts` console ticket → review；Feishu 测试 → review |
 | 5 | 非成员/非 @/其他群不建单 | ✅ | dual-core、service Feishu 测试 |
@@ -61,6 +61,8 @@
 | `tests/wecom-service.test.ts` | 企业微信加密回调 → Eval → Ticket；重放去重；`/status` |
 | `tests/wecom.test.ts` | 企微加解密、验签、echostr、OAuth、群机器人/appchat 发送与拉人 |
 | `tests/group-join.test.ts` | 项目群二维码/链接；飞书/企微自建群自动拉群；默认关闭与失败回落 |
+| `tests/wecom-join.test.ts` | 创建 appchat 应用群、项目详情页签名二维码、扫码 OAuth 后自动入群、API 路由、篡改/缺凭据处理 |
+| `tests/wecom-bot.test.ts` | 企业微信智能机器人帧归一化：群 @、命令、混排、单聊、坏帧 |
 | `tests/feishu.test.ts` | 飞书加解密、验签、URL 验证、发送、OAuth |
 | `tests/intake.test.ts` | 命令解析与 Mention Router 纯函数 |
 | `tests/github.test.ts` | GitHub webhook 签名、Mock App |
@@ -76,12 +78,13 @@
 | 多 PR、上下文订阅、subagent、后台 job | 未实现 | 后续里程碑 |
 | DSH 原生 Session | `TurnRuntime` + transcript + `result.json`；DSH 由命令包装器接入 | 服务可替换 Runtime、便于多项目 |
 | 每 Run 一个容器 | 每工单持久目录 + Worker 容器 | 单机 Compose 简化 |
+| 企业微信普通群 @ 机器人 | 用 appchat 应用群做扫码入群，再用智能机器人长连接接收 @；机器人需群主手动加入一次 | 自建应用不收群消息，官方无自动拉机器人 API |
 
 ## 6. 已知限制
 
-1. **真实 DSH/GitHub/IM 未在本机联调**：使用 Fake Runtime、Mock GitHub 与合成加密报文验证协议；真实凭据需按部署文档配置。
-2. **企业微信无原生线程**：每条消息独立，追问不会自动追加；用 `/status` 等命令或控制台。@bot 依赖文本 `@WECOM_BOT_NAME`。
-3. **企业微信自动拉群仅 `appchat` 自建群**；已有群只能二维码/链接。
+1. **真实 DSH/GitHub/IM 未在本机联调**：使用 Fake Runtime、Mock GitHub、模拟 appchat 与合成加密报文验证协议；真实凭据需按部署文档配置，智能机器人 userid 映射需在真实企业确认。
+2. **企业微信无原生线程**：智能机器人只推送群内 @ 消息，追问也需要 @；用 `/status` 等命令或控制台。
+3. **企业微信自动拉群仅 `appchat` 自建群**；群内 @ 需要额外配置智能机器人，并由群主手动把机器人加入群一次（官方未开放自动拉机器人 API）。已有群只能二维码/链接。智能机器人回调的 `from.userid` 可能是加密 ID，当前未实现明文映射；联调前需确认与 OAuth userid 一致。
 4. **无自动建群**：邀请是项目邀请；群由团队创建后绑定。
 5. **单 PR、无上下文订阅**：PR 评论会作为 Input 续跑，但未跟踪多 PR 或 context follow。
 6. **数据保留清理、RLS、MinIO、OTel 告警未实现**。
@@ -95,4 +98,4 @@
 - **M0 真实联调**：飞书/企微回调、GitHub App、DSH headless；
 - **M1 补齐内核**：拒绝审批、多 PR 跟踪、context 订阅、Policy 重校验、prompt 版本；
 - **M2 产品化**：所有权转移、保留期清理、RLS、MinIO、OTel、告警；
-- **M3 扩展**：智能机器人、推断候选/LLM Router、每 Turn 容器化。
+- **M3 扩展**：推断候选/LLM Router、每 Turn 容器化。

@@ -4,8 +4,9 @@ import { Badge, Button, Card, EmptyState, ErrorState, Spinner, StatCard, useAsyn
 import { formatNumber, labelOf, relativeTime } from '../../format'
 import type { ProjectTabProps } from './types'
 import { policyLabel } from './types'
+import { WecomJoinCard } from './WecomJoinCard'
 
-export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
+export function OverviewTab({ project, role, refresh, onNavigate }: ProjectTabProps) {
   const state = useAsync(() => api.projects.overview(project.id), [project.id])
   if (state.loading) {
     return (
@@ -42,6 +43,8 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
         <StatCard label="待评审" value={data.tickets.waiting_review ?? 0} hint="PR 等待人工合并" />
         <StatCard label="今日 Token" value={formatNumber(data.todayTokens)} hint={budgetHint} tone={budget > 0 && data.todayTokens >= budget ? 'danger' : undefined} />
       </div>
+
+      <WecomJoinCard project={project} role={role} refresh={refresh} onNavigate={onNavigate} />
 
       <div className="grid grid--2">
         <Card

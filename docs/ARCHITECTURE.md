@@ -31,7 +31,7 @@
 
 | 模块 | 代码位置 | 职责 |
 | --- | --- | --- |
-| Channel Gateway | `src/im/*`、`src/app/routes/webhooks.ts` | 验签/解密、归一化、去重、发送、OAuth |
+| Channel Gateway | `src/im/*`、`src/app/routes/webhooks.ts` | 验签/解密、归一化、去重、发送、OAuth；企业微信智能机器人长连接 `im/wecom-bot.ts` |
 | Intake | `src/services/intake.ts` | 消息 → Trigger；未绑定群 `/bind` |
 | Dual Engine | `src/dual/engine.ts` | Trigger 入库、Eval、Decision、Ticket/Mandate、Input、停/重试、PR 事件 |
 | Sessions | `src/dual/sessions.ts` | Main/Executor Session、Turn 队列、Transcript、心跳、取消 |

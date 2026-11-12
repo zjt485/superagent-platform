@@ -7,6 +7,7 @@ import { openDatabase } from './db/client.js'
 import { createDbQueue, createRedisQueue } from './queue/index.js'
 import { createGithub } from './github/index.js'
 import { createIm } from './im/index.js'
+import { startWecomBot } from './im/wecom-bot.js'
 import { buildApp } from './app/build.js'
 import type { AppContext } from './app/context.js'
 import { depsOf } from './services/deps.js'
@@ -37,6 +38,27 @@ const ctx: AppContext = {
   github,
   senders: im.senders,
   startedAt: new Date(),
+}
+
+// WeCom smart robots receive group @ mentions over a long connection. The app
+// chat adapter remains responsible for OAuth, group creation and addMembers.
+const wecomBot = startWecomBot(ctx)
+if (wecomBot) {
+  const botSender = wecomBot.sender
+  ctx.senders.set('wecom', {
+    provider: 'wecom',
+    async send(input) {
+      try {
+        return await botSender.send(input)
+      } catch (error) {
+        // The bot may not be in this chat; appchat can still send to it.
+        ctx.log.warn({ err: error, chatId: input.chatId }, 'wecom bot send failed; falling back to appchat')
+        const adapter = ctx.im.wecom
+        if (!adapter) throw error
+        return adapter.send(input)
+      }
+    },
+  })
 }
 
 const app = await buildApp(ctx)
@@ -76,6 +98,7 @@ async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'api shutting down')
   for (const timer of timers) clearInterval(timer)
   await inlineWorker?.stop().catch(() => {})
+  await wecomBot?.stop().catch(() => {})
   await app.close().catch(() => {})
   if (redis) await redis.close().catch(() => {})
   else await queue.close().catch(() => {})

@@ -67,6 +67,9 @@ export const configSchema = z
     WECOM_API_BASE: text('https://qyapi.weixin.qq.com'),
     WECOM_OAUTH_REDIRECT_PATH: text('/v1/auth/wecom/callback'),
     WECOM_BOT_NAME: text('Superagent'),
+    WECOM_BOT_ID: optionalText,
+    WECOM_BOT_SECRET: optionalText,
+    WECOM_BOT_WS_URL: optionalText,
 
     // GitHub App. Without credentials the deployment runs the mock GitHub
     // adapter (deterministic PR URLs) so the pipeline is demonstrable locally.
@@ -156,4 +159,8 @@ export function hasFeishu(config: Config): boolean {
 
 export function hasWecom(config: Config): boolean {
   return Boolean(config.WECOM_CORP_ID && config.WECOM_SECRET)
+}
+
+export function hasWecomBot(config: Config): boolean {
+  return Boolean(config.WECOM_BOT_ID && config.WECOM_BOT_SECRET)
 }

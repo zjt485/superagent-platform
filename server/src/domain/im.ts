@@ -44,6 +44,12 @@ export interface ImAdapter {
    * showing a group QR code / invite link.
    */
   addMembers?(input: { chatId: string; externalUserIds: string[] }): Promise<{ added: string[] }>
+  /**
+   * Optional: create an app-managed group chat. WeCom cannot add people to
+   * arbitrary existing groups, so managed chats are the only way to offer a
+   * real "scan to join" experience.
+   */
+  createChat?(input: { name: string; ownerUserId: string; userIds: string[] }): Promise<{ chatId: string }>
 }
 
 export type ImRegistry = Partial<Record<ChannelProvider, ImAdapter>>

@@ -172,6 +172,32 @@ export class WecomAdapter implements ImAdapter, OAuthProvider {
   }
 
   /**
+   * Creates an app-managed group chat. This is required for real scan-to-join:
+   * WeCom only lets the app add members to chats it created itself.
+   */
+  async createChat(input: { name: string; ownerUserId: string; userIds: string[] }): Promise<{ chatId: string }> {
+    if (!this.options.corpId || !this.options.secret) {
+      throw new AppError(500, 'internal', 'WeCom app credentials are not configured')
+    }
+    const token = await this.accessToken()
+    const userlist = [...new Set([input.ownerUserId, ...input.userIds])].filter(Boolean)
+    const payload = await this.request<Json>(`/cgi-bin/appchat/create?access_token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name.slice(0, 64),
+        owner: input.ownerUserId,
+        userlist,
+      }),
+    })
+    if (Number(payload.errcode ?? 0) !== 0) {
+      throw new AppError(502, 'internal', `WeCom appchat/create failed: ${asString(payload.errmsg) ?? 'unknown error'}`)
+    }
+    const chatId = asString(payload.chatid)
+    if (!chatId) throw new AppError(502, 'internal', 'WeCom appchat/create did not return a chatid')
+    return { chatId }
+  }
+
+  /**
    * Adds members to an app-managed group chat (`appchat`). Arbitrary existing
    * WeCom groups cannot be modified through the API; the update call fails and
    * the caller falls back to the group QR / invite link.

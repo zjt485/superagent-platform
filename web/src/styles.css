@@ -1348,6 +1348,7 @@ code,
 }
 
 .invite-link code {
+  flex: 1;
   overflow: hidden;
   padding: 6px 8px;
   border: 1px solid var(--line);
@@ -1355,6 +1356,11 @@ code,
   background: var(--surface);
   font-size: 11px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invite-link .btn {
+  flex: none;
   white-space: nowrap;
 }
 
