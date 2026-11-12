@@ -1,4 +1,5 @@
 import { configSchema } from './config.js'
+import { loadLocalEnv } from './env.js'
 import { openDatabase } from './db/client.js'
 import { createLogger } from './logger.js'
 import { depsOf } from './services/deps.js'
@@ -14,6 +15,7 @@ import { enqueuePlan } from './services/orchestrator.js'
 import { claimNextRun } from './services/runs.js'
 import { flushOutbox } from './services/outbox.js'
 import { executeClaimedRun, type WorkerContext } from './worker/pipeline.js'
+import { startInlineWorker } from './worker/inline.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { FakeRuntime } from './runtime/fake.js'
 import { and, eq } from 'drizzle-orm'
@@ -21,6 +23,7 @@ import QRCode from 'qrcode'
 import { channels, projects } from './db/schema.js'
 import type { ChannelProvider } from './domain/status.js'
 
+loadLocalEnv()
 const port = Number(process.env.DEMO_PORT ?? 3100)
 const config = configSchema.parse({
   NODE_ENV: 'development',
@@ -142,6 +145,17 @@ if (demoProject) {
 }
 
 const app = await buildApp(ctx)
+// The demo keeps a worker loop in-process so tickets created from the console
+// or a simulated webhook continue to progress after the initial seed.
+const demoWorkerCtx: WorkerContext = {
+  config: ctx.config,
+  db: ctx.db,
+  log: ctx.log,
+  now: ctx.now,
+  queue: createDbQueue(),
+  ports: { github, git: new FakeGitOps(), runtime: new FakeRuntime({ delayMs: 15 }) },
+}
+const demoWorker = startInlineWorker(demoWorkerCtx, 'demo-inline-worker')
 const timers = [
   setInterval(() => {
     void flushOutbox(ctx, ctx.senders, 20).catch((error) => log.warn({ err: error }, 'outbox flush failed'))
@@ -152,6 +166,7 @@ process.stdout.write(`\nSuperagent demo: ${config.PUBLIC_BASE_URL}\n登录页：
 
 async function shutdown(): Promise<void> {
   for (const timer of timers) clearInterval(timer)
+  await demoWorker.stop().catch(() => {})
   await app.close().catch(() => {})
   await handle.close().catch(() => {})
   process.exit(0)

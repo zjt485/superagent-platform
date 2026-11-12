@@ -86,6 +86,12 @@ export const configSchema = z
     WORKER_CONCURRENCY: integer(1, 1),
     WORKER_POLL_INTERVAL_MS: integer(500, 50),
     RUN_LEASE_SECONDS: integer(120, 30),
+    /**
+     * Development/single-node convenience: run the worker pipeline inside the
+     * API process. Never allowed in production; the control plane must not
+     * execute repository code.
+     */
+    INLINE_WORKER: boolean(false),
 
     // Execution.
     WORKSPACES_DIR: text('./data/workspaces'),
@@ -117,6 +123,13 @@ export const configSchema = z
     }
     if (value.QUEUE_DRIVER === 'redis' && !value.REDIS_URL) {
       ctx.addIssue({ code: 'custom', path: ['REDIS_URL'], message: 'REDIS_URL is required when QUEUE_DRIVER=redis' })
+    }
+    if (value.INLINE_WORKER && value.NODE_ENV === 'production') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['INLINE_WORKER'],
+        message: 'INLINE_WORKER is only for development; run the worker service in production',
+      })
     }
   })
 

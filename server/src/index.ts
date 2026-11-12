@@ -1,4 +1,7 @@
-import { loadConfig } from './config.js'
+import { hostname } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { githubMode, loadConfig } from './config.js'
+import { loadLocalEnv } from './env.js'
 import { createLogger } from './logger.js'
 import { openDatabase } from './db/client.js'
 import { createDbQueue, createRedisQueue } from './queue/index.js'
@@ -10,7 +13,12 @@ import { depsOf } from './services/deps.js'
 import { flushOutbox } from './services/outbox.js'
 import { reapStaleRuns } from './services/orchestrator.js'
 import { cleanupExpiredSessions } from './services/auth.js'
+import { createRuntime } from './runtime/index.js'
+import { RealGitOps } from './worker/git.js'
+import { FakeGitOps } from './worker/fake-git.js'
+import { startInlineWorker } from './worker/inline.js'
 
+loadLocalEnv()
 const config = loadConfig()
 const log = createLogger(config, { role: 'api' })
 const handle = await openDatabase(config)
@@ -32,6 +40,21 @@ const ctx: AppContext = {
 
 const app = await buildApp(ctx)
 
+const inlineWorker = config.INLINE_WORKER
+  ? startInlineWorker(
+      {
+        ...deps,
+        queue,
+        ports: {
+          github,
+          git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
+          runtime: createRuntime(config, log),
+        },
+      },
+      `inline-${hostname()}-${randomUUID().slice(0, 8)}`,
+    )
+  : null
+
 const timers: NodeJS.Timeout[] = []
 timers.push(
   setInterval(() => {
@@ -51,6 +74,7 @@ log.info({ port: config.PORT, queue: config.QUEUE_DRIVER, github: github.mode, d
 async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'api shutting down')
   for (const timer of timers) clearInterval(timer)
+  await inlineWorker?.stop().catch(() => {})
   await app.close().catch(() => {})
   if (redis) await redis.close().catch(() => {})
   else await queue.close().catch(() => {})

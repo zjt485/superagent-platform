@@ -52,7 +52,7 @@
 
 ## 4. 测试清单
 
-当前共 **43** 个用例（9 个文件）。
+当前共 **44** 个用例（10 个文件）。
 
 | 文件 | 覆盖 |
 | --- | --- |
@@ -65,6 +65,7 @@
 | `tests/lifecycle.test.ts` | 心跳超时回收、PR 评论触发新执行、每日 Token 预算拒绝入队 |
 | `tests/group-join.test.ts` | 群二维码/邀请链接、飞书/企微自建群自动拉群、默认关闭与失败回落 |
 | `tests/wecom-intake.test.ts` | 企微加密回调建单、消息去重、非成员/非 @ 忽略、`/status` 命令 |
+| `tests/inline-worker.test.ts` | 开发用 API 进程内 Worker 完成计划 → 执行 → PR |
 
 运行：
 

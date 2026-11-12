@@ -234,3 +234,82 @@ pnpm dev:worker
 ```
 
 默认没有 `DATABASE_URL` 时使用 PGlite（嵌入 Postgres），适合本地与单机演示；生产请使用 Postgres 16。
+
+服务端启动时会自动加载 `.env`（依次尝试 `server/.env`、`../.env`，已存在的环境变量优先），因此本地配置可以写进 `platform/.env`。
+
+## 13. 本地接企业微信联调（单进程）
+
+没有 Docker、没有公网服务器时，可以用一条隧道 + API 进程内 Worker 跑通真实企业微信回调。**仅用于开发联调，生产必须使用独立 Worker。**
+
+### 13.1 准备隧道
+
+```bash
+# 任选其一；隧道必须提供 HTTPS（企业微信回调硬要求）
+cloudflared tunnel --url http://127.0.0.1:3000
+# 或 ngrok http 3000
+```
+
+记下 HTTPS 地址，例如 `https://abc-123.trycloudflare.com`。
+
+### 13.2 写 `platform/.env`
+
+```env
+NODE_ENV=development
+PUBLIC_BASE_URL=https://abc-123.trycloudflare.com
+AUTH_DEV_LOGIN=true
+INLINE_WORKER=true
+QUEUE_DRIVER=db
+AGENT_RUNTIME=fake
+GITHUB_MODE=mock
+
+# 企业微信自建应用
+WECOM_CORP_ID=ww...
+WECOM_AGENT_ID=1000002
+WECOM_SECRET=...
+WECOM_TOKEN=...
+WECOM_ENCODING_AES_KEY=43位...
+WECOM_BOT_NAME=Superagent
+
+# 本地 PGlite（默认即可）
+PGLITE_DIR=./data/pglite
+```
+
+说明：
+
+- `INLINE_WORKER=true` 让 API 进程顺带消费 Run，避免再起一个 Worker；`NODE_ENV=production` 时配置校验会拒绝该值。
+- `AGENT_RUNTIME=fake` + `GITHUB_MODE=mock` 用于先验证“企微消息 → 工单 → PR 流程”；真正改代码/开 PR 需要改回 `command`/`app` 并配置 DSH 与 GitHub（见第 6 节）。
+- 如果只用群机器人发送、不想配应用消息，仍然需要 CorpID/Secret 做 OAuth；发送侧可改用 `config.webhookUrl`。
+
+### 13.3 配置企业微信后台
+
+1. 接收消息 URL：`https://abc-123.trycloudflare.com/webhooks/wecom`，Token/EncodingAESKey 与 `.env` 一致。
+2. 网页授权回调：`https://abc-123.trycloudflare.com/v1/auth/wecom/callback`，可信域名填隧道域名。
+3. 把应用可见范围设为你和测试同事。
+
+### 13.4 启动并测试
+
+```bash
+cd platform
+pnpm install
+pnpm build                 # 构建 Web 控制台
+pnpm dev:api               # 自动加载 .env，:3000；日志出现 inline worker enabled
+```
+
+1. 用隧道地址打开控制台，点击“使用企业微信登录”。
+2. 创建项目，绑定企业微信群：
+   - 填写群 `chatid`；
+   - 若为已有群，上传群二维码/邀请链接，并关闭“邀请后自动拉群”；
+   - 在“群机器人 Webhook”填入该群的机器人地址（已有群必须，否则回执发不出去）；
+   - 若是应用自建群，可勾选自动拉群。
+3. 生成邀请链接，让测试账号接受邀请成为项目成员。
+4. 在企业微信群里发送 `@Superagent /help`，应收到帮助；发送 `@Superagent 修复登录页文案` 创建工单。
+5. 控制台应看到工单从 `triaged → running → waiting_review`，并出现 Mock PR 链接；审计里有 `webhook.wecom`、`ticket.created`、`run.succeeded`。
+
+### 13.5 排查
+
+- 企业微信后台 URL 验证失败：确认隧道在线、`/webhooks/wecom` 可访问、Token/AESKey 与 `.env` 完全一致。
+- 消息进来了但不建单：发送者是否已通过 OAuth 登录并加入项目；消息是否包含 `@WECOM_BOT_NAME`；群是否绑定到该项目且项目为 active。
+- 有工单但收不到回执：已有群的 `chatid` 不能直接 `appchat/send`，请配置群机器人 Webhook；查看审计 `notification.sent` / Outbox failed。
+- 想验证真实 Agent/PR：把 `AGENT_RUNTIME=command`、`GITHUB_MODE=app` 并配置 `AGENT_COMMAND` 与 GitHub App；或改用第 2 节的 Compose 部署。
+
+> `pnpm demo` 是独立的 Mock 演示（PGlite + FakeRuntime + Mock GitHub），不会读取上述企微凭据；联调请使用 `pnpm dev:api`。

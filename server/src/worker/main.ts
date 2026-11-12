@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import { githubMode, loadConfig } from '../config.js'
+import { loadLocalEnv } from '../env.js'
 import { openDatabase } from '../db/client.js'
 import { createLogger } from '../logger.js'
 import { depsOf } from '../services/deps.js'
@@ -15,6 +16,7 @@ import { RealGitOps } from './git.js'
 import { FakeGitOps } from './fake-git.js'
 import { reapStaleRuns } from '../services/orchestrator.js'
 
+loadLocalEnv()
 const config = loadConfig()
 const log = createLogger(config, { role: 'worker' })
 const handle = await openDatabase(config)

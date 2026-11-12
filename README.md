@@ -36,6 +36,8 @@ pnpm demo           # 初始化演示数据、跑通一次工单，并在 :3100 
 
 > 想重新开始：停止 demo，删除 `platform/server/data` 后再次执行 `pnpm demo`。
 
+本地接真实飞书/企业微信回调（隧道 + 单进程 Worker）见 [部署文档 §13](docs/DEPLOYMENT.md#13-本地接企业微信联调单进程)。
+
 开发模式（API 与 Vite 热更新分开跑）：
 
 ```bash
