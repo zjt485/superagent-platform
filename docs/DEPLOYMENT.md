@@ -110,11 +110,12 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
    - URL：`https://<DOMAIN>/webhooks/wecom`；
    - Token / EncodingAESKey 填入 `.env`（`WECOM_TOKEN` / `WECOM_ENCODING_AES_KEY`）；
    - 在控制台 IM 群页填写群 `chatid`。
-3. OAuth：应用可信域名配置 `<DOMAIN>`，网页授权回调 `https://<DOMAIN>/v1/auth/wecom/callback`。
+3. OAuth：应用可信域名配置 `<DOMAIN>`，网页授权回调 `https://<DOMAIN>/v1/auth/wecom/callback`。需要 `snsapi_base` 网页授权及通讯录读取权限。
 4. 若应用消息无法发到已有群，可在群内添加「群机器人」，把 Webhook 地址填到绑定的 `config.webhookUrl`。
-5. 企业微信不支持通过 API 把成员加入已有群：请上传群二维码或填写群邀请链接，成员接受项目邀请后扫码入群。
+5. 企业微信**已有群**不支持通过 API 加人：请上传群二维码或填写群邀请链接，成员接受项目邀请后扫码入群。
+6. 如果想自动拉群，使用应用通过 `appchat/create` 创建的自建群，把对应 `chatid` 绑定到项目，并在「IM 群」勾选“邀请后自动拉群”。平台会用 `appchat/get` 读取现有成员、合并新成员后 `appchat/update`；普通已有群会失败并自动回落到二维码/链接。
 
-**限制**：企业微信应用消息没有原生线程和可靠的 @bot 标识；当前适配器用文本 `@<WECOM_BOT_NAME>` 判定，工单线程续跑不可用。生产建议以飞书为主，或升级为企业微信「智能机器人」回调后再启用。
+**限制**：企业微信应用消息没有原生线程和可靠的 @bot 标识；当前适配器用文本 `@<WECOM_BOT_NAME>` 判定，工单线程续跑不可用（用 `/status` 等命令或控制台操作）。已有群不能通过 API 加人；自动拉群只对 `appchat` 自建群有效。生产建议以飞书为主，或升级为企业微信「智能机器人」回调后再启用。
 
 ## 6. Agent Runtime 接入
 
@@ -204,7 +205,8 @@ docker compose exec -T postgres pg_restore -U superagent -d superagent --clean -
 | GitHub PR 创建失败 | installation 是否授权该仓库；App 权限是否含 Contents/Pull requests；Worker 日志中的 git 错误 |
 | Worker 一直不领取 | 项目是否 active；是否达到 `maxConcurrentRuns`；队列驱动与 Redis 连接；Run 是否卡在 `running`（reaper 会在心跳超时后回收） |
 | 登录后看不到项目 | 是否通过邀请加入；身份 provider/external id 是否与入群账号一致 |
-| 接受邀请后没有自动进群 | 检查飞书应用是否有 `im:chat.members:write_only`、机器人是否为群管理员；`config.autoJoin` 是否为 true；失败时成员仍可扫码入群，审计里查 `channel.auto_join_failed` |
+| 接受邀请后没有自动进群 | 飞书：检查 `im:chat.members:write_only` 与群管理员权限；企业微信：仅 `appchat` 自建群可用。确认 `config.autoJoin=true`；失败时成员仍可扫码入群，审计里查 `channel.auto_join_failed` |
+| 企业微信回调 400/401 | 检查 `WECOM_TOKEN`、`WECOM_ENCODING_AES_KEY`（43 位）、`WECOM_CORP_ID`；确认回调 URL 配的是 `/webhooks/wecom` 且域名与可信域名一致 |
 | 入群二维码不显示 | 在「IM 群」绑定表单上传群二维码（<500KB）或填写群邀请链接；企业微信必须手动配置 |
 | 生产启动失败 `SESSION_SECRET must be at least 32 characters` | 补齐密钥；`AUTH_DEV_LOGIN` 必须为 false |
 

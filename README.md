@@ -59,7 +59,7 @@ pnpm check      # typecheck + test + build
 | 多项目 / 单仓库 | 项目绑定一个 GitHub 仓库；项目间数据按 `project_id` 隔离 |
 | 成员与角色 | Owner / Maintainer / Member / Viewer；邀请二维码、角色变更、移除 |
 | 扫码入项目 + 入群 | 扫项目邀请二维码 → OAuth 登录 → 加入项目；随后展示项目群二维码/邀请链接，飞书可自动拉群 |
-| IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信 Adapter（验签/解密/发送，能力差异见文档） |
+| IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信（回调验签/解密、OAuth、群机器人发送、应用自建群自动拉群、群二维码兜底） |
 | @bot 接单 | 确定性 Mention Router：只处理 @bot、命令、已有工单线程回复；非 @ 普通消息忽略 |
 | 命令 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` |
 | 工单生命周期 | new → triaged → planned → running → waiting_review → done，失败/取消分支 |

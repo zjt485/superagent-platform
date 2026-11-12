@@ -178,7 +178,7 @@ Body：
 }
 ```
 
-- 自动拉群只在 IM 适配器实现 `addMembers` 时执行（当前为飞书，需 `im:chat.members:write_only` 且机器人为群管理员）。
+- 自动拉群只在 IM 适配器实现 `addMembers` 时执行：飞书需 `im:chat.members:write_only` 且机器人为群管理员；企业微信仅支持应用通过 `appchat` 创建的自建群，绑定已有群时请关闭 `autoJoin`。
 - 用户在当前 IM 平台没有身份（例如开发登录）、自动拉群失败或平台不支持（企业微信）时，`joined=false`，客户端展示 `qrDataUrl` / `joinUrl`，不会阻塞加入项目。
 
 ## 仓库与 GitHub App
@@ -205,7 +205,7 @@ Body：
 - `(provider, external_chat_id)` 全局唯一；一个群只能属于一个项目。
 - 一个项目同时只有一个 active 群；绑定新群会自动停用旧绑定。
 - `config.joinUrl` / `config.qrDataUrl` 用于新成员接受邀请后的入群入口；未知字段与非法 URL 会被丢弃。
-- `config.autoJoin` 控制飞书是否在邀请接受后自动拉群，默认开启。
+- `config.autoJoin` 控制是否在邀请接受后自动拉群：飞书默认开启；企业微信默认关闭（仅应用自建群可用）。
 - 企业微信可在 `config.webhookUrl` 配置群机器人地址作为发送通道。
 
 ## 工单

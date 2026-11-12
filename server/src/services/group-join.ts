@@ -64,7 +64,9 @@ export async function projectGroupInfo(deps: Deps, projectId: string): Promise<P
       configuredJoinUrl ??
       (channel.provider === 'feishu' ? FEISHU_OPEN_CHAT(channel.externalChatId) : null),
     qrDataUrl: validImage(config.qrDataUrl),
-    autoJoin: config.autoJoin !== false,
+    // Feishu can usually add members to an existing chat; WeCom only for chats
+    // the app itself created, so auto-join is opt-in there.
+    autoJoin: typeof config.autoJoin === 'boolean' ? config.autoJoin : channel.provider === 'feishu',
   }
 }
 

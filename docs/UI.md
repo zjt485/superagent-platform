@@ -12,7 +12,7 @@
   ?tab=overview            概览：统计、交付配置、最近工单、活跃运行
   ?tab=tickets             工单列表、筛选、分页、新建
   ?tab=members             成员、角色、添加/移除
-  ?tab=channel             IM 群绑定/解绑、群二维码上传、邀请链接、自动拉群开关、接入说明
+  ?tab=channel             IM 群绑定/解绑、群二维码上传、邀请链接、自动拉群开关（飞书 / 企微自建群）、接入说明
   ?tab=repo                GitHub 仓库：安装、选择、手动绑定、解绑
   ?tab=invites             邀请二维码、有效期/次数、撤销
   ?tab=settings            名称/描述、执行策略、模型、安全说明

@@ -19,6 +19,7 @@ export interface WecomOptions {
 type Json = Record<string, unknown>
 
 const asRecord = (value: unknown): Json => (value && typeof value === 'object' ? (value as Json) : {})
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 const asString = (value: unknown): string | undefined => {
   if (typeof value === 'string') return value
   if (typeof value === 'number') return String(value)
@@ -168,6 +169,40 @@ export class WecomAdapter implements ImAdapter, OAuthProvider {
     })
     if (!response.ok) throw new AppError(502, 'internal', `WeCom API ${path} failed with HTTP ${response.status}`)
     return (await response.json().catch(() => ({}))) as T
+  }
+
+  /**
+   * Adds members to an app-managed group chat (`appchat`). Arbitrary existing
+   * WeCom groups cannot be modified through the API; the update call fails and
+   * the caller falls back to the group QR / invite link.
+   */
+  async addMembers(input: { chatId: string; externalUserIds: string[] }): Promise<{ added: string[] }> {
+    if (input.externalUserIds.length === 0) return { added: [] }
+    if (!this.options.corpId || !this.options.secret) {
+      throw new AppError(500, 'internal', 'WeCom app credentials are not configured')
+    }
+    const token = await this.accessToken()
+    const info = await this.request<Json>(
+      `/cgi-bin/appchat/get?access_token=${encodeURIComponent(token)}&chatid=${encodeURIComponent(input.chatId)}`,
+      { method: 'GET' },
+    )
+    if (Number(info.errcode ?? 0) !== 0) {
+      throw new AppError(502, 'internal', `WeCom appchat/get failed: ${asString(info.errmsg) ?? 'unknown error'}`)
+    }
+    const chat = asRecord(info.chat_info)
+    const existing = asArray(chat.userlist).map((value) => String(value))
+    const merged = [...new Set([...existing, ...input.externalUserIds])]
+    const body: Json = { chatid: input.chatId, userlist: merged }
+    if (typeof chat.name === 'string') body.name = chat.name
+    if (typeof chat.owner === 'string') body.owner = chat.owner
+    const updated = await this.request<Json>(`/cgi-bin/appchat/update?access_token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+    if (Number(updated.errcode ?? 0) !== 0) {
+      throw new AppError(502, 'internal', `WeCom appchat/update failed: ${asString(updated.errmsg) ?? 'unknown error'}`)
+    }
+    return { added: input.externalUserIds.filter((id) => !existing.includes(id)) }
   }
 
   authorizeUrl(input: { state: string; redirectUri: string }): string {

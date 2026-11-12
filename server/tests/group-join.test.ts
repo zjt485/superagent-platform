@@ -17,30 +17,41 @@ async function harness(): Promise<Harness> {
   return instance
 }
 
-async function seed(h: Harness) {
-  const alice = await loginWithIdentity(h.ctx, 'feishu', { externalId: 'ou_alice', name: 'Alice' })
-  const bob = await loginWithIdentity(h.ctx, 'feishu', { externalId: 'ou_bob', name: 'Bob' })
+async function seed(
+  h: Harness,
+  provider: 'feishu' | 'wecom' = 'feishu',
+  config?: Record<string, unknown>,
+) {
+  const prefix = provider === 'feishu' ? 'ou' : 'wx'
+  const chatId = provider === 'feishu' ? 'oc_group' : 'wc_group'
+  const alice = await loginWithIdentity(h.ctx, provider, { externalId: `${prefix}_alice`, name: 'Alice' })
+  const bob = await loginWithIdentity(h.ctx, provider, { externalId: `${prefix}_bob`, name: 'Bob' })
   const project = await createProject(h.ctx, alice, { name: '扫码项目' })
   await bindRepo(h.ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world' })
   await bindChannel(h.ctx, project.id, alice, {
-    provider: 'feishu',
-    externalChatId: 'oc_group',
+    provider,
+    externalChatId: chatId,
     name: '项目群',
-    config: {
-      joinUrl: 'https://applink.feishu.cn/client/chat/open?openChatId=oc_group',
-      qrDataUrl: 'data:image/png;base64,AAAA',
-      autoJoin: true,
-      webhookUrl: 'https://evil.example.com/should-be-dropped',
-    },
+    config:
+      config ??
+      {
+        joinUrl:
+          provider === 'feishu'
+            ? `https://applink.feishu.cn/client/chat/open?openChatId=${chatId}`
+            : 'https://work.weixin.qq.com/group/join',
+        qrDataUrl: 'data:image/png;base64,AAAA',
+        autoJoin: true,
+        webhookUrl: 'https://evil.example.com/should-be-dropped',
+      },
   })
   await updateProject(h.ctx, project.id, alice, { status: 'active' })
   const { token } = await createInvite(h.ctx, project.id, alice, { role: 'member', maxUses: 5 })
   return { alice, bob, project, token }
 }
 
-function fakeFeishu(addMembers: ImAdapter['addMembers']): ImAdapter {
+function fakeIm(provider: 'feishu' | 'wecom', addMembers: ImAdapter['addMembers']): ImAdapter {
   return {
-    provider: 'feishu',
+    provider,
     async verifyAndParse() {
       return { events: [], deliveryIds: [] }
     },
@@ -77,7 +88,7 @@ describe('scan to join the project group', () => {
     const { bob, project, token } = await seed(h)
     const calls: { chatId: string; externalUserIds: string[] }[] = []
     h.ctx.im = {
-      feishu: fakeFeishu(async (input) => {
+      feishu: fakeIm('feishu', async (input) => {
         calls.push(input)
         return { added: input.externalUserIds }
       }),
@@ -93,7 +104,7 @@ describe('scan to join the project group', () => {
     const h = await harness()
     const { bob, project, token } = await seed(h)
     h.ctx.im = {
-      feishu: fakeFeishu(async () => {
+      feishu: fakeIm('feishu', async () => {
         throw new Error('bot is not a group admin')
       }),
     }
@@ -103,5 +114,47 @@ describe('scan to join the project group', () => {
     expect(outcome.joined).toBe(false)
     expect(outcome.error).toContain('group admin')
     expect(outcome.group?.qrDataUrl).toBeTruthy()
+  })
+
+  it('automatically adds a WeCom member when auto-join is enabled', async () => {
+    const h = await harness()
+    const { bob, project, token } = await seed(h, 'wecom', {
+      joinUrl: 'https://work.weixin.qq.com/group/join',
+      qrDataUrl: 'data:image/png;base64,AAAA',
+      autoJoin: true,
+    })
+    const calls: { chatId: string; externalUserIds: string[] }[] = []
+    h.ctx.im = {
+      wecom: fakeIm('wecom', async (input) => {
+        calls.push(input)
+        return { added: input.externalUserIds }
+      }),
+    }
+
+    await acceptInvite(h.ctx, token, bob)
+    const outcome = await joinProjectGroup(h.ctx, project.id, bob)
+    expect(outcome.joined).toBe(true)
+    expect(calls).toEqual([{ chatId: 'wc_group', externalUserIds: ['wx_bob'] }])
+  })
+
+  it('defaults WeCom auto-join to off because existing groups cannot be modified', async () => {
+    const h = await harness()
+    const { bob, project, token } = await seed(h, 'wecom', {
+      joinUrl: 'https://work.weixin.qq.com/group/join',
+      qrDataUrl: 'data:image/png;base64,AAAA',
+    })
+    const calls: unknown[] = []
+    h.ctx.im = {
+      wecom: fakeIm('wecom', async (input) => {
+        calls.push(input)
+        return { added: input.externalUserIds }
+      }),
+    }
+
+    await acceptInvite(h.ctx, token, bob)
+    const outcome = await joinProjectGroup(h.ctx, project.id, bob)
+    expect(outcome.joined).toBe(false)
+    expect(outcome.group?.autoJoin).toBe(false)
+    expect(calls).toHaveLength(0)
   })
 })

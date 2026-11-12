@@ -59,7 +59,7 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
         config: {
           ...(joinUrl.trim() ? { joinUrl: joinUrl.trim() } : {}),
           ...(qrDataUrl ? { qrDataUrl } : {}),
-          ...(provider === 'feishu' ? { autoJoin } : {}),
+          autoJoin,
           ...(provider === 'wecom' && webhookUrl.trim() ? { webhookUrl: webhookUrl.trim() } : {}),
         },
       })
@@ -114,8 +114,10 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
               <div>
                 <dt>入群方式</dt>
                 <dd>
-                  {active.provider === 'feishu' && activeConfig.autoJoin !== false
-                    ? '邀请成员后尝试自动拉群，失败时展示二维码 / 链接'
+                  {activeConfig.autoJoin === true || (activeConfig.autoJoin === undefined && active.provider === 'feishu')
+                    ? active.provider === 'feishu'
+                      ? '邀请成员后尝试自动拉群，失败时展示二维码 / 链接'
+                      : '邀请成员后尝试加入应用自建群，失败时展示二维码 / 链接'
                     : '展示群二维码 / 邀请链接'}
                 </dd>
               </div>
@@ -168,7 +170,16 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
         <Card title="绑定一个新的群">
           <div className="form-stack">
             <Field label="IM 平台">
-              <select className="select" value={provider} onChange={(event) => setProvider(event.target.value as ChannelProvider)}>
+              <select
+                className="select"
+                value={provider}
+                onChange={(event) => {
+                  const next = event.target.value as ChannelProvider
+                  setProvider(next)
+                  // WeCom auto-join only works for app-created chats.
+                  setAutoJoin(next === 'feishu')
+                }}
+              >
                 <option value="feishu">飞书</option>
                 <option value="wecom">企业微信</option>
               </select>
@@ -202,15 +213,17 @@ export function ChannelTab({ project, role }: ProjectTabProps) {
               </div>
             ) : null}
             <ErrorNotice message={qrError} />
-            {provider === 'feishu' ? (
-              <label className="checkbox-row">
-                <input type="checkbox" checked={autoJoin} onChange={(event) => setAutoJoin(event.target.checked)} />
+            <label className="checkbox-row">
+              <input type="checkbox" checked={autoJoin} onChange={(event) => setAutoJoin(event.target.checked)} />
+              <span>
+                <strong>邀请后自动拉群</strong>
                 <span>
-                  <strong>邀请后自动拉群</strong>
-                  <span>需要飞书应用具备 im:chat.members:write_only 权限并是群管理员；失败时自动展示二维码 / 链接。</span>
+                  {provider === 'feishu'
+                    ? '需要飞书应用具备 im:chat.members:write_only 权限并是群管理员；失败时自动展示二维码 / 链接。'
+                    : '仅应用通过 appchat 创建的自建群支持 API 拉人；绑定已有群时请保持关闭，改用群二维码 / 邀请链接。'}
                 </span>
-              </label>
-            ) : null}
+              </span>
+            </label>
             {provider === 'wecom' ? (
               <Field label="群机器人 Webhook（可选）" hint="企业微信应用消息无法直接发到已有群时，可配置群机器人 Webhook 作为发送通道。">
                 <input className="input" value={webhookUrl} onChange={(event) => setWebhookUrl(event.target.value)} placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..." />

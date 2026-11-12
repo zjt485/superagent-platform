@@ -10,7 +10,7 @@
 | FR-02 | GitHub App 绑定、选择仓库、installation | ✅ | `github/client.ts`、`routes/repo.ts`；Mock 模式 e2e 覆盖；真实 App 客户端需凭据联调 |
 | FR-03 | 成员与角色、邀请、移除、改角色 | ✅ 基本完成 | `services/projects.ts`、`invites.ts`；e2e 邀请加入。**未做所有权转移接口**，Owner 不能直接授予 |
 | FR-04 | 邀请二维码、签名 token、过期、次数 | ✅ | `services/invites.ts`（SHA-256 存储、原子扣减、qrcode data URL）；e2e 预览与接受 |
-| FR-05 | IM 群绑定，控制台 + 群内 `/bind`；扫码入群 | ✅ | `bindChannel`、`tryBindUnboundChat`；`services/group-join.ts` 提供群二维码/邀请链接与飞书自动拉群；`tests/group-join.test.ts` |
+| FR-05 | IM 群绑定，控制台 + 群内 `/bind`；扫码入群 | ✅ | `bindChannel`、`tryBindUnboundChat`；`services/group-join.ts` 提供群二维码/邀请链接，飞书与企微自建群可自动拉群；`tests/group-join.test.ts`、`tests/wecom-intake.test.ts` |
 | FR-06 | @bot 接单、命令、工单线程回复 | ✅ | `domain/intake.ts`、`services/intake.ts`；`tests/intake.test.ts`；Feishu e2e 覆盖忽略/去重/线程 |
 | FR-07 | 工单生命周期 | ✅ | `services/tickets.ts` 状态机；e2e 审批/取消/重试 |
 | FR-08 | Run 队列、Worker、超时、重试、取消、日志 | ✅ | `services/runs.ts`、`worker/pipeline.ts`、`orchestrator.ts`；reaper 实现心跳超时；e2e 跑通 plan/execute |
@@ -52,7 +52,7 @@
 
 ## 4. 测试清单
 
-当前共 **36** 个用例（8 个文件）。
+当前共 **43** 个用例（9 个文件）。
 
 | 文件 | 覆盖 |
 | --- | --- |
@@ -63,7 +63,8 @@
 | `tests/db.test.ts` | 迁移与 Drizzle schema 往返 |
 | `tests/e2e.test.ts` | 登录/CSRF/角色/邀请/项目隔离；计划→执行→PR→合并；审批/取消/重试；飞书去重、线程、忽略、暂停、`/bind` |
 | `tests/lifecycle.test.ts` | 心跳超时回收、PR 评论触发新执行、每日 Token 预算拒绝入队 |
-| `tests/group-join.test.ts` | 群二维码/邀请链接、飞书自动拉群、拉群失败回落 |
+| `tests/group-join.test.ts` | 群二维码/邀请链接、飞书/企微自建群自动拉群、默认关闭与失败回落 |
+| `tests/wecom-intake.test.ts` | 企微加密回调建单、消息去重、非成员/非 @ 忽略、`/status` 命令 |
 
 运行：
 
@@ -75,16 +76,17 @@ cd platform && pnpm test
 
 1. **演示默认 FakeRuntime + Mock GitHub**：真实 Agent 与 GitHub 需要按 [DEPLOYMENT.md](DEPLOYMENT.md) 配置；接口和测试已隔离在这两个端口后面。
 2. **计划审批为二值**：只能批准或取消，没有“拒绝并附意见”的独立动作；PR 合并审批在 GitHub 侧完成。
-3. **企业微信线程/自动拉群缺失**：平台能力所限，按方案退化为“绑定已有群 + 群二维码/邀请链接”；@bot 用文本匹配。
-4. **无自动建群**：邀请二维码是“项目邀请”，群由团队预先创建后绑定；入群优先自动拉人（飞书），否则扫码/点链接入群（方案 §4.2 的兜底路径）。
-5. **数据保留清理未实现**：消息 90 天、审计 1 年的清理应作为定时任务补充；当前只提供级联删除。
-6. **RLS 未启用**：租户隔离由应用层强制并测试；可选 Postgres RLS 未实现。
-7. **无对象存储/MinIO**：Run 日志存 `run_events`，`logs_url` 预留但未上传。
-8. **无 OpenTelemetry / 告警**：有结构化日志与 Prometheus 文本指标；告警规则未提供。
-9. **所有权转移缺失**：不能把 Owner 转给他人；可添加新 Owner 需扩展接口（当前明确禁止直接授予）。
-10. **Docker 镜像未在本机验证**：开发环境没有 Docker；Dockerfile/Compose 已按标准多阶段构建编写，首次部署需按第 10 节排查。
-11. **Web 控制台轮询**：工单详情在活跃状态每 5 秒拉取，没有 WebSocket 推送。
-12. **单 IM 平台每项目**：数据模型与 UI 都按“一个主群”设计。
+3. **企业微信无原生线程**：每条消息按独立 thread 处理，追问不会自动追加到既有工单；使用 `/status`、`/approve` 等命令，或从控制台操作。@bot 用文本匹配 `@WECOM_BOT_NAME`。
+4. **企业微信自动拉群仅限 appchat 自建群**：已有群不支持 API 加人，仍走群二维码/邀请链接。飞书自动拉群需群管理员与成员权限。
+5. **无自动建群**：邀请二维码是“项目邀请”，群由团队预先创建后绑定；入群优先自动拉人，否则扫码/点链接入群（方案 §4.2 的兜底路径）。
+6. **数据保留清理未实现**：消息 90 天、审计 1 年的清理应作为定时任务补充；当前只提供级联删除。
+7. **RLS 未启用**：租户隔离由应用层强制并测试；可选 Postgres RLS 未实现。
+8. **无对象存储/MinIO**：Run 日志存 `run_events`，`logs_url` 预留但未上传。
+9. **无 OpenTelemetry / 告警**：有结构化日志与 Prometheus 文本指标；告警规则未提供。
+10. **所有权转移缺失**：不能把 Owner 转给他人；可添加新 Owner 需扩展接口（当前明确禁止直接授予）。
+11. **Docker 镜像未在本机验证**：开发环境没有 Docker；Dockerfile/Compose 已按标准多阶段构建编写，首次部署需按第 10 节排查。
+12. **Web 控制台轮询**：工单详情在活跃状态每 5 秒拉取，没有 WebSocket 推送。
+13. **单 IM 平台每项目**：数据模型与 UI 都按“一个主群”设计。
 
 ## 6. 后续里程碑建议
 
