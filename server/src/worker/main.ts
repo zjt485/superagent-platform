@@ -4,17 +4,17 @@ import { Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import { githubMode, loadConfig } from '../config.js'
 import { loadLocalEnv } from '../env.js'
-import { openDatabase } from '../db/client.js'
 import { createLogger } from '../logger.js'
+import { openDatabase } from '../db/client.js'
 import { depsOf } from '../services/deps.js'
 import { createDbQueue, createRedisQueue, RUN_QUEUE_NAME } from '../queue/index.js'
 import { createGithub } from '../github/index.js'
-import { createRuntime } from '../runtime/index.js'
-import { claimNextRun, claimRunById } from '../services/runs.js'
-import { executeClaimedRun, type WorkerContext } from './pipeline.js'
+import { claimNextTurn, claimTurnById } from '../dual/sessions.js'
+import { executeTurn, type DualWorkerContext } from '../dual/worker.js'
+import { createTurnRuntime } from '../dual/runtime.js'
+import { reapStaleTurns } from '../dual/engine.js'
 import { RealGitOps } from './git.js'
 import { FakeGitOps } from './fake-git.js'
-import { reapStaleRuns } from '../services/orchestrator.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -25,13 +25,13 @@ const workerId = config.WORKER_ID ?? `${hostname()}-${randomUUID().slice(0, 8)}`
 const redis = config.QUEUE_DRIVER === 'redis' ? createRedisQueue(config, log) : null
 const queue = redis?.queue ?? createDbQueue()
 
-const ctx: WorkerContext = {
+const ctx: DualWorkerContext = {
   ...deps,
   queue,
   ports: {
     github: createGithub(config, log),
     git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
-    runtime: createRuntime(config, log),
+    runtime: createTurnRuntime(config, log),
   },
 }
 
@@ -44,23 +44,23 @@ function track<T>(promise: Promise<T>): Promise<T> {
   return promise
 }
 
-async function execute(runId: string): Promise<void> {
-  const run = await claimRunById(deps, runId, workerId)
-  if (!run) return
-  log.info({ runId: run.id, ticketId: run.ticketId, kind: run.kind }, 'run started')
-  await executeClaimedRun(ctx, run)
+async function execute(turnId: string): Promise<void> {
+  const turn = await claimTurnById(deps, turnId, workerId)
+  if (!turn) return
+  log.info({ turnId: turn.id, ticketId: turn.ticketId, kind: turn.kind }, 'turn started')
+  await executeTurn(ctx, turn)
 }
 
 async function pollLoop(index: number): Promise<void> {
   while (!stopping) {
     try {
-      const run = await claimNextRun(deps, workerId)
-      if (!run) {
+      const turn = await claimNextTurn(deps, workerId)
+      if (!turn) {
         await sleep(config.WORKER_POLL_INTERVAL_MS)
         continue
       }
-      log.info({ runId: run.id, ticketId: run.ticketId, kind: run.kind, loop: index }, 'run started')
-      await track(executeClaimedRun(ctx, run))
+      log.info({ turnId: turn.id, ticketId: turn.ticketId, kind: turn.kind, loop: index }, 'turn started')
+      await track(executeTurn(ctx, turn))
     } catch (error) {
       log.error({ err: error }, 'worker loop error')
       await sleep(Math.max(config.WORKER_POLL_INTERVAL_MS, 1000))
@@ -69,25 +69,23 @@ async function pollLoop(index: number): Promise<void> {
 }
 
 let bullWorker: Worker | null = null
-// BullMQ wants a dedicated blocking connection for the Worker; the Queue keeps
-// its own connection. Sharing one ioredis instance between both can stall jobs.
 const workerConnection = redis ? new Redis(config.REDIS_URL as string, { maxRetriesPerRequest: null }) : null
 workerConnection?.on('error', (error) => log.warn({ err: error }, 'redis worker connection error'))
 if (redis && workerConnection) {
   bullWorker = new Worker(
     RUN_QUEUE_NAME,
     async (job) => {
-      await track(execute(String(job.data.runId)))
+      await track(execute(String(job.data.runId ?? job.data.turnId)))
     },
     { connection: workerConnection, concurrency: config.WORKER_CONCURRENCY },
   )
   bullWorker.on('failed', (job, error) => log.error({ err: error, jobId: job?.id }, 'bullmq job failed'))
   bullWorker.on('error', (error) => log.warn({ err: error }, 'bullmq worker error'))
-  // Orphan recovery: a run row may be queued without a live Redis job.
+  // Orphan recovery: a turn row may be queued without a live Redis job.
   setInterval(() => {
     if (stopping) return
-    void claimNextRun(deps, workerId)
-      .then((run) => (run ? track(executeClaimedRun(ctx, run)) : undefined))
+    void claimNextTurn(deps, workerId)
+      .then((turn) => (turn ? track(executeTurn(ctx, turn)) : undefined))
       .catch((error) => log.warn({ err: error }, 'orphan poll failed'))
   }, 15_000)
 } else {
@@ -97,7 +95,7 @@ if (redis && workerConnection) {
 }
 
 const reaper = setInterval(() => {
-  void reapStaleRuns(ctx).catch((error) => log.warn({ err: error }, 'reaper failed'))
+  void reapStaleTurns(ctx).catch((error) => log.warn({ err: error }, 'reaper failed'))
 }, 30_000)
 
 function sleep(ms: number): Promise<void> {

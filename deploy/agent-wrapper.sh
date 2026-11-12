@@ -1,46 +1,51 @@
 #!/usr/bin/env sh
 # =============================================================================
-# Agent runtime wrapper (template)
+# Dual-agent runtime wrapper (template)
 #
-# The worker starts this command with two arguments:
-#   $1 workspace   a fresh, isolated directory containing the cloned repository
-#   $2 promptFile  the task prompt written by the control plane
+# The worker calls this command for every Turn (Main Session eval or Executor
+# Session execute). Arguments:
+#   1 workspace    Main: scratch dir; Executor: persistent ticket checkout
+#   2 promptFile   role system prompt
+#   3 inputFile    structured packet JSON (role, policy, thread/ticket, etc.)
+#   4 resultFile   where the wrapper must write .superagent/result.json
+#   5 turnId
+#   6 ticketId     empty for Main Session turns
 #
-# The command must:
-#   1. run the coding agent headlessly inside $1 (DSH headless recommended);
-#   2. leave the repository changes in the working tree (do NOT push);
-#   3. write $1/.superagent/result.json before exiting 0:
-#        { "summary": "...", "plan": "...", "tokens": 1234, "cost": 0.01 }
-#
-# `plan` is required for plan runs, `summary` for execute runs. The worker
-# commits the branch, pushes agent/* and opens the PR itself.
-#
-# Fail with a non-zero exit code and print the reason to stderr on failure.
+# It must write:
+#   { "output": <role protocol>, "tokens": 1234, "cost": 0.0123 }
+# and exit 0. Do not push branches or create pull requests; the platform does
+# that after the Executor reports ready.
 # =============================================================================
 
 set -eu
 
 WORKSPACE="$1"
 PROMPT_FILE="$2"
-RESULT_DIR="$WORKSPACE/.superagent"
-RESULT_FILE="$RESULT_DIR/result.json"
-LOG_FILE="$RESULT_DIR/agent.jsonl"
+INPUT_FILE="$3"
+RESULT_FILE="$4"
+TURN_ID="$5"
+TICKET_ID="${6:-}"
+RESULT_DIR="$(dirname "$RESULT_FILE")"
 
 mkdir -p "$RESULT_DIR"
 
-# Replace the command below with the real DSH headless invocation for your
-# installation. The `dsh` CLI flags differ between versions; adapt them here
-# instead of changing the platform.
+# Replace this with the real DSH headless invocation. It should:
+#   - read the role prompt and input packet;
+#   - resume the DSH session named by $SUPERAGENT_SESSION_ID when possible;
+#   - run in $WORKSPACE;
+#   - write $RESULT_FILE with the output protocol;
+#   - print JSONL progress events to stdout if desired.
 #
 # Example shape:
 #   dsh run --headless \
 #     --workspace "$WORKSPACE" \
 #     --prompt-file "$PROMPT_FILE" \
-#     --output jsonl | tee "$LOG_FILE"
-#
-# The pipeline only depends on the exit code and result.json contract, so any
-# agent runner can be substituted (see src/domain/runtime.ts).
+#     --input-file "$INPUT_FILE" \
+#     --session "$SUPERAGENT_SESSION_ID" \
+#     --output jsonl > "$RESULT_DIR/agent.jsonl"
+#   # then convert the agent's final message into $RESULT_FILE
 
 echo "agent wrapper: no agent command configured" >&2
+echo "role=$SUPERAGENT_ROLE turn=$TURN_ID ticket=$TICKET_ID" >&2
 echo "edit /opt/superagent/agent-wrapper.sh to invoke DSH headless" >&2
 exit 70

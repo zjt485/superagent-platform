@@ -129,13 +129,13 @@ export function TicketsTab({ project, role }: ProjectTabProps) {
                             {ticket.title}
                           </Link>
                           <span>
-                            #{ticket.id.replace(/-/g, '').slice(0, 8)}
+                            #{ticket.id.replace(/-/g, '').slice(0, 8)} · {labelOf(ticket.stage ?? ticket.status)}
                             {ticket.prUrl ? ' · 已开 PR' : ''}
                           </span>
                         </div>
                       </td>
                       <td>
-                        <Badge status={ticket.status} label={labelOf(ticket.status)} />
+                        <Badge status={ticket.stage ?? ticket.status} label={labelOf(ticket.stage ?? ticket.status)} />
                       </td>
                       <td className="small muted">{ticket.priority}</td>
                       <td>{ticket.requesterName ?? '—'}</td>

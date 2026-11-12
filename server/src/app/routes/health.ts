@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { count, eq, sql } from 'drizzle-orm'
 import type { AppContext } from '../context.js'
-import { outboxEvents, runs, tickets } from '../../db/schema.js'
+import { outboxEvents, sessionTurns, tickets } from '../../db/schema.js'
 
 export function registerHealthRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get('/healthz', async () => ({
@@ -23,12 +23,16 @@ export function registerHealthRoutes(app: FastifyInstance, ctx: AppContext): voi
 
   app.get('/metrics', async (request, reply) => {
     const [runRows, ticketRows, [pending]] = await Promise.all([
-      ctx.db.select({ status: runs.status, value: count() }).from(runs).groupBy(runs.status),
+      ctx.db
+        .select({ status: sessionTurns.status, value: count() })
+        .from(sessionTurns)
+        .where(eq(sessionTurns.kind, 'execute'))
+        .groupBy(sessionTurns.status),
       ctx.db.select({ status: tickets.status, value: count() }).from(tickets).groupBy(tickets.status),
       ctx.db.select({ value: count() }).from(outboxEvents).where(eq(outboxEvents.status, 'pending')),
     ])
     const lines = [
-      '# HELP superagent_runs_total Runs by status.',
+      '# HELP superagent_runs_total Executor turns by status.',
       '# TYPE superagent_runs_total gauge',
       ...runRows.map((row) => `superagent_runs_total{status="${row.status}"} ${Number(row.value)}`),
       '# HELP superagent_tickets_total Tickets by status.',

@@ -139,6 +139,9 @@ try {
   await navigate(`${BASE}/projects/${projectId}`)
   await shot('03-project-overview')
 
+  await navigate(`${BASE}/projects/${projectId}?tab=session`)
+  await shot('03b-main-session')
+
   await navigate(`${BASE}/projects/${projectId}?tab=tickets`)
   await shot('04-tickets')
 

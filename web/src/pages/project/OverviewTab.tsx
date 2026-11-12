@@ -112,7 +112,7 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
           </div>
         </Card>
 
-        <Card title="活跃运行" extra={<Button size="sm" variant="subtle" onClick={() => onNavigate('tickets')}>全部工单</Button>}>
+        <Card title="活跃 Turn" extra={<Button size="sm" variant="subtle" onClick={() => onNavigate('tickets')}>全部工单</Button>}>
           {data.activeRuns.length === 0 ? (
             <EmptyState title="当前没有运行中的任务" hint="成员在群里 @bot 提需求后，这里会显示排队与执行进度。" />
           ) : (
@@ -162,12 +162,12 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
                           {ticket.title}
                         </Link>
                         <span>
-                          #{ticket.id.replace(/-/g, '').slice(0, 8)} · {labelOf(ticket.status)}
+                          #{ticket.id.replace(/-/g, '').slice(0, 8)} · {labelOf(ticket.stage ?? ticket.status)}
                         </span>
                       </div>
                     </td>
                     <td>
-                      <Badge status={ticket.status} label={labelOf(ticket.status)} />
+                      <Badge status={ticket.stage ?? ticket.status} label={labelOf(ticket.stage ?? ticket.status)} />
                     </td>
                     <td>{ticket.requesterName ?? '—'}</td>
                     <td className="small muted">{relativeTime(ticket.updatedAt)}</td>
@@ -187,7 +187,7 @@ export function OverviewTab({ project, onNavigate }: ProjectTabProps) {
       <div className="grid grid--3">
         <StatCard label="已完成" value={data.tickets.done ?? 0} hint="PR 合并后自动关闭" tone="success" />
         <StatCard label="失败 / 取消" value={(data.tickets.failed ?? 0) + (data.tickets.cancelled ?? 0)} hint="可在工单页重试" tone={(data.tickets.failed ?? 0) > 0 ? 'danger' : undefined} />
-        <StatCard label="累计运行" value={Object.values(data.runs).reduce((sum, value) => sum + value, 0)} hint={`失败 ${data.runs.failed ?? 0} · 超时 ${data.runs.timeout ?? 0}`} />
+        <StatCard label="累计 Turn" value={Object.values(data.runs).reduce((sum, value) => sum + value, 0)} hint={`失败 ${data.runs.failed ?? 0} · 超时 ${data.runs.timeout ?? 0}`} />
       </div>
     </div>
   )

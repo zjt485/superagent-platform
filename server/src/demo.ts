@@ -10,18 +10,18 @@ import type { AppContext } from './app/context.js'
 import { loginWithIdentity } from './services/auth.js'
 import { addMemberByUserId, bindChannel, bindRepo, createProject, updateProject } from './services/projects.js'
 import { createInvite } from './services/invites.js'
-import { createTicket, getTicketById } from './services/tickets.js'
-import { enqueuePlan } from './services/orchestrator.js'
-import { claimNextRun } from './services/runs.js'
 import { flushOutbox } from './services/outbox.js'
-import { executeClaimedRun, type WorkerContext } from './worker/pipeline.js'
-import { startInlineWorker } from './worker/inline.js'
+import { receiveTrigger } from './dual/engine.js'
+import { claimNextTurn } from './dual/sessions.js'
+import { executeTurn, type DualWorkerContext } from './dual/worker.js'
+import { startInlineWorker } from './dual/inline.js'
+import { FakeTurnRuntime } from './dual/runtime.js'
 import { FakeGitOps } from './worker/fake-git.js'
-import { FakeRuntime } from './runtime/fake.js'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import QRCode from 'qrcode'
-import { channels, projects } from './db/schema.js'
+import { channels, identities, projects, tickets } from './db/schema.js'
 import type { ChannelProvider } from './domain/status.js'
+import { newId } from './domain/ids.js'
 
 loadLocalEnv()
 const port = Number(process.env.DEMO_PORT ?? 3100)
@@ -69,14 +69,35 @@ const consoleSender = {
 }
 ctx.senders.set('feishu', consoleSender)
 
-const existing = await handle.db.select().from(projects)
-if (existing.length === 0) {
-  process.stdout.write('首次运行：正在创建演示项目并跑通「工单 → 计划 → PR」…\n')
-  const alice = await loginWithIdentity(ctx, 'dev', { externalId: 'dev-alice', name: 'Alice' })
-  const bob = await loginWithIdentity(ctx, 'dev', { externalId: 'dev-bob', name: 'Bob' })
+async function linkDevIdentity(userId: string, externalId: string, name: string): Promise<void> {
+  const [existing] = await handle.db
+    .select({ id: identities.id })
+    .from(identities)
+    .where(and(eq(identities.provider, 'dev'), eq(identities.externalId, externalId)))
+  if (existing) return
+  await handle.db.insert(identities).values({
+    id: newId(),
+    userId,
+    provider: 'dev',
+    externalId,
+    displayName: name,
+    createdAt: new Date(),
+  })
+}
+
+const existingProjects = await handle.db.select().from(projects)
+if (existingProjects.length === 0) {
+  process.stdout.write('首次运行：正在创建演示项目，并跑通 Main Session → Executor Session → PR…\n')
+  // Real IM identities for the simulated webhook; dev identities make the
+  // demo login return the same users.
+  const alice = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_alice', name: 'Alice' })
+  const bob = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_bob', name: 'Bob' })
+  await linkDevIdentity(alice.id, 'dev-alice', 'Alice')
+  await linkDevIdentity(bob.id, 'dev-bob', 'Bob')
+
   const project = await createProject(ctx, alice, {
     name: '演示项目',
-    description: '由 pnpm demo 创建的示例项目：飞书群接单、Agent 开 PR、人工合并。',
+    description: '由 pnpm demo 创建：Main Session 接单，Executor Session 执行并开 PR，人工合并。',
   })
   await bindRepo(ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world', defaultBranch: 'main' })
   await bindChannel(ctx, project.id, alice, { provider: 'feishu', externalChatId: 'oc_demo_project', name: '演示项目群' })
@@ -84,37 +105,37 @@ if (existing.length === 0) {
   await addMemberByUserId(ctx, project.id, alice, { userId: bob.id, role: 'member' })
 
   const invite = await createInvite(ctx, project.id, alice, { role: 'member', maxUses: 20, expiresInHours: 72 })
-  const ticket = await createTicket(ctx, {
-    projectId: project.id,
-    requesterId: alice.id,
-    requesterName: alice.name,
-    title: '新增欢迎页并补充验证说明',
-    body: '在 docs 下新增一个欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
+  await receiveTrigger(ctx, {
+    provider: 'feishu',
+    externalId: 'demo_trigger_1',
+    chatId: 'oc_demo_project',
+    threadKey: 'demo_thread_1',
+    senderExternalId: 'ou_alice',
+    senderName: 'Alice',
+    mentionBot: true,
+    text: '@_user_1 在 docs 下新增欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
   })
-  await enqueuePlan(ctx, ticket)
 
-  const workerCtx: WorkerContext = {
-    config: ctx.config,
-    db: ctx.db,
-    log: ctx.log,
-    now: ctx.now,
+  const workerCtx: DualWorkerContext = {
+    ...deps,
     queue: createDbQueue(),
-    ports: { github, git: new FakeGitOps(), runtime: new FakeRuntime({ delayMs: 30 }) },
+    ports: { github, git: new FakeGitOps(), runtime: new FakeTurnRuntime({ delayMs: 20 }) },
   }
-  for (let index = 0; index < 2; index += 1) {
-    const run = await claimNextRun(workerCtx, 'demo-worker')
-    if (run) await executeClaimedRun(workerCtx, run)
+  for (let index = 0; index < 4; index += 1) {
+    const turn = await claimNextTurn(workerCtx, 'demo-seed-worker')
+    if (!turn) break
+    await executeTurn(workerCtx, turn)
   }
   await flushOutbox(ctx, ctx.senders, 50)
-  const finalTicket = await getTicketById(ctx, ticket.id)
+  const [finalTicket] = await handle.db.select().from(tickets).orderBy(desc(tickets.createdAt)).limit(1)
   process.stdout.write(
     [
       '',
       '演示数据已就绪：',
       `  邀请：${invite.invite.url}（接受后可看到项目群二维码）`,
       `  项目：${project.name} (${project.slug})`,
-      `  工单：${finalTicket.title} → 状态 ${finalTicket.status}`,
-      `  PR：${finalTicket.prUrl ?? '（未生成）'}`,
+      `  工单：${finalTicket?.title ?? '（无）'} → ${finalTicket?.stage ?? finalTicket?.status ?? '（无）'}`,
+      `  PR：${finalTicket?.prUrl ?? '（未生成）'}`,
       '',
       '打开控制台后用开发登录：昵称 Alice（Owner）或 Bob（Member）。',
       '',
@@ -122,9 +143,7 @@ if (existing.length === 0) {
   )
 }
 
-// Ensure the demo group has a join link and QR so the invitation flow can
-// demonstrate "accept project invite → scan to join the group" even on an
-// already-seeded database.
+// Ensure the demo group has a join link and QR for the invitation flow.
 const [demoProject] = await handle.db.select().from(projects).limit(1)
 if (demoProject) {
   const [channel] = await handle.db
@@ -132,28 +151,23 @@ if (demoProject) {
     .from(channels)
     .where(and(eq(channels.projectId, demoProject.id), eq(channels.status, 'active')))
   if (channel) {
-    const config = (channel.config ?? {}) as Record<string, unknown>
-    if (typeof config.joinUrl !== 'string' || typeof config.qrDataUrl !== 'string') {
+    const channelConfig = (channel.config ?? {}) as Record<string, unknown>
+    if (typeof channelConfig.joinUrl !== 'string' || typeof channelConfig.qrDataUrl !== 'string') {
       const joinUrl = `https://applink.feishu.cn/client/chat/open?openChatId=${encodeURIComponent(channel.externalChatId)}`
       const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, width: 320 })
       await handle.db
         .update(channels)
-        .set({ config: { ...config, joinUrl, qrDataUrl, autoJoin: true }, updatedAt: new Date() })
+        .set({ config: { ...channelConfig, joinUrl, qrDataUrl, autoJoin: true }, updatedAt: new Date() })
         .where(eq(channels.id, channel.id))
     }
   }
 }
 
 const app = await buildApp(ctx)
-// The demo keeps a worker loop in-process so tickets created from the console
-// or a simulated webhook continue to progress after the initial seed.
-const demoWorkerCtx: WorkerContext = {
-  config: ctx.config,
-  db: ctx.db,
-  log: ctx.log,
-  now: ctx.now,
+const demoWorkerCtx: DualWorkerContext = {
+  ...deps,
   queue: createDbQueue(),
-  ports: { github, git: new FakeGitOps(), runtime: new FakeRuntime({ delayMs: 15 }) },
+  ports: { github, git: new FakeGitOps(), runtime: new FakeTurnRuntime({ delayMs: 15 }) },
 }
 const demoWorker = startInlineWorker(demoWorkerCtx, 'demo-inline-worker')
 const timers = [

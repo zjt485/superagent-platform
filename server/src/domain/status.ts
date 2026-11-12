@@ -45,6 +45,13 @@ export const ACTIVE_RUN_STATUSES: readonly RunStatus[] = ['queued', 'running']
 export const RUN_KINDS = ['plan', 'execute'] as const
 export type RunKind = (typeof RUN_KINDS)[number]
 
+/** Dual-agent session turns replace the old plan/execute Runs. */
+export const TURN_KINDS = ['eval', 'execute', 'resume'] as const
+export type TurnKind = (typeof TURN_KINDS)[number]
+
+export const TURN_STATUSES = ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'timeout'] as const
+export type TurnStatus = (typeof TURN_STATUSES)[number]
+
 export const CHANNEL_PROVIDERS = ['feishu', 'wecom'] as const
 export type ChannelProvider = (typeof CHANNEL_PROVIDERS)[number]
 

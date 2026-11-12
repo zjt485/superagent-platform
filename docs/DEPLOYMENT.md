@@ -47,12 +47,12 @@ docker compose logs -f api worker
 | 服务 | 说明 |
 | --- | --- |
 | `api` | 控制面 + Webhook + Web 控制台静态资源；无状态，可多副本 |
-| `worker` | 领取 Run、克隆仓库、调用 Agent、推送分支与创建 PR |
+| `worker` | 领取 Session Turn；Main eval 或 Executor 执行；克隆/复用仓库目录；推送分支与创建 PR |
 | `postgres` | 控制面数据库（Postgres 16） |
 | `redis` | BullMQ 队列与唤醒（可降级为 DB 队列） |
 | `caddy` | TLS、反向代理、Webhook 入口 |
 
-Worker 容器内**不挂载 Docker socket**，每次 Run 使用容器内独立工作目录并清理。若需要更强的内核级隔离，可把 `worker` 换成一次性任务容器（K8s Job / ECS Task），`AgentRuntime` 接口不变。
+Worker 容器内**不挂载 Docker socket**；Executor Session 在容器内按工单使用持久目录，Main Session 使用 scratch 目录。若需要更强的内核级隔离，可把 `worker` 换成一次性任务容器（K8s Job / ECS Task），`TurnRuntime` 接口不变。
 
 ### 只用 API 镜像
 
@@ -117,30 +117,55 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
 
 **限制**：企业微信应用消息没有原生线程和可靠的 @bot 标识；当前适配器用文本 `@<WECOM_BOT_NAME>` 判定，工单线程续跑不可用（用 `/status` 等命令或控制台操作）。已有群不能通过 API 加人；自动拉群只对 `appchat` 自建群有效。生产建议以飞书为主，或升级为企业微信「智能机器人」回调后再启用。
 
-## 6. Agent Runtime 接入
+## 6. Agent Runtime 接入（双 Session）
 
-平台不直接内置 DSH CLI 参数，而是通过 `AGENT_COMMAND` 适配。约定：
+平台不内置 DSH CLI 参数，而是通过 `AGENT_COMMAND` 适配。每次模型调用是一个 **Turn**；Main Session 和 Executor Session 共用同一个命令，通过环境变量与输入文件区分角色。
 
-- 命令接收两个 shell 参数：`{workspace}`（已克隆仓库的独立目录）与 `{promptFile}`（任务提示词）；
-- Agent 只在工作区修改文件，**不要**执行 `git push` / 创建 PR；
-- 结束时写 `${workspace}/.superagent/result.json`：
+命令可用占位符：
 
-```json
-{ "summary": "变更摘要", "plan": "计划（plan 阶段）", "tokens": 1234, "cost": 0.0123 }
+```text
+{workspace}   Main：项目 scratch 目录；Executor：持久工单目录（已 clone）
+{promptFile}  角色提示词（system prompt 的本地文件）
+{inputFile}   结构化 packet：{ role, project, thread/ticket, policy, transcript, ... }
+{resultFile}  期望写入 .superagent/result.json 的路径
+{turnId}      Turn id
+{ticketId}    Executor 的工单 id，Main 为空
 ```
 
-- 退出码 0 表示成功；非 0 视为失败，stderr 会写入 Run 错误信息；
-- 单次运行受 `policy.maxRunMinutes` 与 `AGENT_TIMEOUT_MINUTES` 双重限制；
-- 平台在成功后负责 commit、推送 `agent/*`、创建 PR，并清理工作目录。
+运行时环境还提供 `SUPERAGENT_ROLE=main|executor`、`SUPERAGENT_SESSION_ID`、`SUPERAGENT_TURN_ID`、`SUPERAGENT_TICKET_ID`、`SUPERAGENT_INPUT_FILE`、`SUPERAGENT_RESULT_FILE`。
 
-把 `deploy/agent-wrapper.sh` 复制到镜像/宿主，替换其中的 DSH headless 调用，然后设置：
+约定：
+
+- Main Session 只输出 decisions，不修改仓库；Executor Session 只改工作区文件；
+- **不要**执行 `git push` 或创建 PR；平台负责 commit、推送 `agent/*`、创建 PR；
+- 结束时写 `result.json`：
+
+```json
+{
+  "output": { "status": "ready", "summary": "…", "plan": "…" },
+  "tokens": 1234,
+  "cost": 0.0123
+}
+```
+
+`output` 必须符合角色协议：
+
+- Main：`{"decisions":[{"triggerId","action":"accept|ignore|attach|stop",...}]}`
+- Executor：`{"status":"progress|waiting|ready|blocked|failed|dropped","summary","plan?","attention?","branch?","tokens?","cost?"}`
+
+其他要求：
+
+- 退出码 0 表示成功；非 0 视为 Turn 失败，stderr/错误会写入 Turn。
+- 单 Turn 受 `policy.maxRunMinutes` 与 `AGENT_TIMEOUT_MINUTES` 双重限制。
+- Executor 的持久目录在工单结束后由保留策略清理；Main 的 scratch 目录也不应长期保留。
+- 如使用 DSH Session 能力，请按 `SUPERAGENT_SESSION_ID` 恢复同一 Session；平台同时持久化 transcript，模型不可用时可回放。
 
 ```env
 AGENT_RUNTIME=command
-AGENT_COMMAND=sh /opt/superagent/agent-wrapper.sh {workspace} {promptFile}
+AGENT_COMMAND=sh /opt/superagent/agent-wrapper.sh {workspace} {promptFile} {inputFile} {resultFile} {turnId} {ticketId}
 ```
 
-容器里需要安装 `git`、DSH 运行所需依赖与模型凭据。模型密钥建议只注入 Worker 环境，不进入 API 进程。
+把 `deploy/agent-wrapper.sh` 复制到镜像/宿主并替换其中的 DSH headless 调用。容器里需要安装 `git`、DSH 运行所需依赖与模型凭据；模型密钥只注入 Worker 环境，不进入 API 进程。
 
 ## 7. 数据库迁移
 
@@ -172,16 +197,16 @@ docker compose exec -T postgres pg_restore -U superagent -d superagent --clean -
 ```
 
 - **Redis**：Compose 已开启 AOF；队列可重建，不作为业务真相来源。
-- **工作目录**：Run 结束默认删除，不需要备份；`KEEP_WORKSPACES=true` 仅用于排障并需人工清理。
+- **工作目录**：Executor 的工单目录跨 Turn 保留，工单结束后按保留策略清理；Main 的 scratch 目录可随时清理。`KEEP_WORKSPACES=true` 仅用于排障并需人工清理。
 - **消息 / 审计保留**：方案建议消息 90 天、审计 1 年。MVP 未内置定时清理，生产可用定时 SQL 或部署侧任务实现（见 STATUS.md「待完成」）。
-- **删除项目**：删除 `projects` 行会级联清理成员、仓库、群、邀请、工单、Run、审批、Outbox 与审计；工作目录按 `project_id` 前缀清理。
+- **删除项目**：删除 `projects` 行会级联清理成员、仓库、群、邀请、工单、Session/Turn、Report、Input、审批、Outbox 与审计；工作目录按 `project_id` 前缀清理。
 
 ## 9. 扩容与高可用
 
 | 组件 | 扩容方式 |
 | --- | --- |
 | `api` | 无状态，直接多副本；Compose 可去掉端口映射，由 Caddy 做负载均衡 |
-| `worker` | 多副本；`WORKER_CONCURRENCY` 控制每进程并发；项目级 `maxConcurrentRuns` 由 claim SQL 强制 |
+| `worker` | 多副本；`WORKER_CONCURRENCY` 控制每进程并发；项目级 Executor Turn 的 `maxConcurrentRuns` 由 claim 逻辑强制 |
 | Postgres | 托管实例 / 主从；每日备份 |
 | Redis | 托管实例；BullMQ 连接需允许 `maxRetriesPerRequest: null` |
 | 工作目录 | 多 Worker 时用本地临时盘即可；若需要留存，挂载独立卷或对象存储 |
@@ -203,7 +228,7 @@ docker compose exec -T postgres pg_restore -U superagent -d superagent --clean -
 | 群消息不建单 | 群是否绑定到项目、项目是否 active、发送者是否成员、是否 @bot、是否在普通线程（非工单） |
 | 建单后没有回执 | Outbox 是否 pending；是否配置 `FEISHU_APP_ID/SECRET`；查看 api 日志 `IM notification delivery failed` |
 | GitHub PR 创建失败 | installation 是否授权该仓库；App 权限是否含 Contents/Pull requests；Worker 日志中的 git 错误 |
-| Worker 一直不领取 | 项目是否 active；是否达到 `maxConcurrentRuns`；队列驱动与 Redis 连接；Run 是否卡在 `running`（reaper 会在心跳超时后回收） |
+| Worker 一直不领取 | 项目是否 active；是否达到 `maxConcurrentRuns`；队列驱动与 Redis 连接；Turn 是否卡在 `running`（reaper 会在心跳超时后回收） |
 | 登录后看不到项目 | 是否通过邀请加入；身份 provider/external id 是否与入群账号一致 |
 | 接受邀请后没有自动进群 | 飞书：检查 `im:chat.members:write_only` 与群管理员权限；企业微信：仅 `appchat` 自建群可用。确认 `config.autoJoin=true`；失败时成员仍可扫码入群，审计里查 `channel.auto_join_failed` |
 | 企业微信回调 400/401 | 检查 `WECOM_TOKEN`、`WECOM_ENCODING_AES_KEY`（43 位）、`WECOM_CORP_ID`；确认回调 URL 配的是 `/webhooks/wecom` 且域名与可信域名一致 |
@@ -276,7 +301,7 @@ PGLITE_DIR=./data/pglite
 
 说明：
 
-- `INLINE_WORKER=true` 让 API 进程顺带消费 Run，避免再起一个 Worker；`NODE_ENV=production` 时配置校验会拒绝该值。
+- `INLINE_WORKER=true` 让 API 进程顺带消费 Session Turn，避免再起一个 Worker；`NODE_ENV=production` 时配置校验会拒绝该值。
 - `AGENT_RUNTIME=fake` + `GITHUB_MODE=mock` 用于先验证“企微消息 → 工单 → PR 流程”；真正改代码/开 PR 需要改回 `command`/`app` 并配置 DSH 与 GitHub（见第 6 节）。
 - 如果只用群机器人发送、不想配应用消息，仍然需要 CorpID/Secret 做 OAuth；发送侧可改用 `config.webhookUrl`。
 
@@ -303,7 +328,7 @@ pnpm dev:api               # 自动加载 .env，:3000；日志出现 inline wor
    - 若是应用自建群，可勾选自动拉群。
 3. 生成邀请链接，让测试账号接受邀请成为项目成员。
 4. 在企业微信群里发送 `@Superagent /help`，应收到帮助；发送 `@Superagent 修复登录页文案` 创建工单。
-5. 控制台应看到工单从 `triaged → running → waiting_review`，并出现 Mock PR 链接；审计里有 `webhook.wecom`、`ticket.created`、`run.succeeded`。
+5. 控制台应看到工单从 `queued → working → review`（兼容状态 `triaged → running → waiting_review`），出现 Mock PR 链接；Main Session 页有 eval Turn，审计里有 `webhook.wecom`、`ticket.created`、`turn.succeeded`。
 
 ### 13.5 排查
 

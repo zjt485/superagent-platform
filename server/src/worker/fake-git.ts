@@ -8,7 +8,8 @@ export class FakeGitOps implements GitOps {
   readonly committed: { dir: string; branch: string; message: string }[] = []
 
   async clone(input: GitCloneInput): Promise<void> {
-    await mkdir(input.dir, { recursive: true })
+    await mkdir(path.join(input.dir, '.git'), { recursive: true })
+    await writeFile(path.join(input.dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8')
     await writeFile(path.join(input.dir, 'README.md'), '# demo repository\n', 'utf8')
   }
 

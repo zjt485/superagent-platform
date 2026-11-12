@@ -46,7 +46,12 @@ export class RealGitOps implements GitOps {
   }
 
   async createBranchAndCommit(input: GitCommitInput): Promise<boolean> {
-    await this.exec(['checkout', '-b', input.branch], { cwd: input.dir, env: input.env })
+    // Reuse the ticket branch on follow-up turns; create it on the first turn.
+    try {
+      await this.exec(['checkout', input.branch], { cwd: input.dir, env: input.env })
+    } catch {
+      await this.exec(['checkout', '-b', input.branch], { cwd: input.dir, env: input.env })
+    }
     await this.exec(['add', '-A'], { cwd: input.dir, env: input.env })
     const status = await this.exec(['status', '--porcelain'], { cwd: input.dir, env: input.env })
     if (!status.stdout.trim()) return false

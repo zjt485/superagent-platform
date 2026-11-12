@@ -15,11 +15,14 @@ import {
   removeMember,
   updateProject,
 } from '../../services/projects.js'
-import { requireProjectAccess } from '../../services/access.js'
+import { getProjectRow, requireProjectAccess } from '../../services/access.js'
 import { listAudit } from '../../services/audit.js'
 import { tokensUsedToday, usageSeries } from '../../services/usage.js'
-import { runs, tickets, users } from '../../db/schema.js'
+import { tickets, users } from '../../db/schema.js'
 import { parsePolicy } from '../../domain/policy.js'
+import { overviewCounts, mainSessionView, turnToRun } from '../../dual/views.js'
+import { policyChanged } from '../../dual/engine.js'
+import { policyVersion } from '../../dual/policy.js'
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -84,7 +87,13 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const user = requireUser(request)
     const projectId = uuidParam(request)
     const body = parseBody(updateProjectSchema, request)
+    const before = await getProjectRow(ctx, projectId)
+    const beforeVersion = policyVersion(parsePolicy(before.policyJson))
     await updateProject(ctx, projectId, user, body)
+    if (body.policy !== undefined) {
+      const after = await getProjectRow(ctx, projectId)
+      await policyChanged(ctx, after, beforeVersion)
+    }
     return { project: await projectBundle(ctx, projectId, user) }
   })
 
@@ -133,38 +142,35 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const user = requireUser(request)
     const projectId = uuidParam(request)
     const access = await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
-    const statusCounts = await ctx.db
-      .select({ status: tickets.status, value: count() })
-      .from(tickets)
-      .where(eq(tickets.projectId, projectId))
-      .groupBy(tickets.status)
-    const runCounts = await ctx.db
-      .select({ status: runs.status, value: count() })
-      .from(runs)
-      .where(eq(runs.projectId, projectId))
-      .groupBy(runs.status)
+    const stats = await overviewCounts(ctx, projectId)
     const recentTickets = await ctx.db
       .select()
       .from(tickets)
       .where(eq(tickets.projectId, projectId))
       .orderBy(desc(tickets.createdAt))
       .limit(8)
-    const activeRunRows = await ctx.db
-      .select()
-      .from(runs)
-      .where(and(eq(runs.projectId, projectId), inArray(runs.status, ['queued', 'running'])))
-      .orderBy(desc(runs.createdAt))
-      .limit(5)
+    const runtime: Record<string, number> = {}
+    for (const [key, value] of Object.entries(stats.turns)) {
+      const [kind, status] = key.split(':')
+      if (kind === 'execute' && status) runtime[status] = (runtime[status] ?? 0) + value
+    }
     const todayTokens = await tokensUsedToday(ctx, projectId)
     return {
       project: await projectBundle(ctx, projectId, user),
-      tickets: Object.fromEntries(statusCounts.map((row) => [row.status, Number(row.value)])),
-      runs: Object.fromEntries(runCounts.map((row) => [row.status, Number(row.value)])),
+      tickets: stats.tickets,
+      runs: runtime,
       recentTickets,
-      activeRuns: activeRunRows,
+      activeRuns: stats.activeTurns.map(turnToRun),
       todayTokens,
       policy: parsePolicy(access.project.policyJson),
     }
+  })
+
+  app.get('/v1/projects/:id/main-session', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
+    return await mainSessionView(ctx, projectId)
   })
 
   app.get('/v1/projects/:id/audit', async (request) => {

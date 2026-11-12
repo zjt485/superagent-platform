@@ -46,6 +46,18 @@ export const intakeActionEnum = pgEnum('intake_action', [
 ])
 export const outboxStatusEnum = pgEnum('outbox_status', ['pending', 'sent', 'failed'])
 
+export const sessionRoleEnum = pgEnum('session_role', ['main', 'executor'])
+export const sessionStatusEnum = pgEnum('session_status', ['idle', 'queued', 'running', 'error'])
+export const turnKindEnum = pgEnum('turn_kind', ['eval', 'execute', 'resume'])
+export const turnStatusEnum = pgEnum('turn_status', ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'timeout'])
+export const evaluationStatusEnum = pgEnum('evaluation_status', ['queued', 'running', 'decided', 'unavailable'])
+export const mandateStrengthEnum = pgEnum('mandate_strength', ['explicit', 'inferred'])
+export const assignmentStatusEnum = pgEnum('assignment_status', ['pending', 'running', 'ended'])
+export const reportStatusEnum = pgEnum('report_status', ['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped'])
+export const subscriptionKindEnum = pgEnum('subscription_kind', ['own', 'context'])
+export const inputSourceEnum = pgEnum('input_source', ['trigger', 'person', 'note', 'policy', 'approval', 'system'])
+export const triggerKindEnum = pgEnum('trigger_kind', ['message', 'command', 'ci', 'pr_comment', 'pr_merge', 'pr_close', 'resume'])
+
 const createdAt = timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
 const updatedAt = timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
 
@@ -234,6 +246,16 @@ export const tickets = pgTable(
     branch: text('branch'),
     lastRunId: uuid('last_run_id'),
     closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }),
+
+    // Dual-agent core: stage is the source of truth, status remains a
+    // compatibility projection for the existing console.
+    stage: text('stage'),
+    policyVersion: text('policy_version'),
+    originTriggerId: uuid('origin_trigger_id'),
+    lastReportId: uuid('last_report_id'),
+    endedReason: text('ended_reason'),
+    endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+
     createdAt,
     updatedAt,
   },
@@ -287,61 +309,6 @@ export const intakeEvents = pgTable(
     createdAt,
   },
   (table) => [uniqueIndex('intake_events_message_uq').on(table.messageId), index('intake_events_project_idx').on(table.projectId, table.createdAt)],
-)
-
-export const runs = pgTable(
-  'runs',
-  {
-    id: uuid('id').primaryKey(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    ticketId: uuid('ticket_id')
-      .notNull()
-      .references(() => tickets.id, { onDelete: 'cascade' }),
-    kind: runKindEnum('kind').notNull().default('execute'),
-    status: runStatusEnum('status').notNull().default('queued'),
-    workerId: text('worker_id'),
-    attempt: integer('attempt').notNull().default(1),
-    prompt: text('prompt'),
-    result: jsonb('result').$type<Record<string, unknown>>(),
-    error: text('error'),
-    tokens: integer('tokens').notNull().default(0),
-    cost: numeric('cost', { precision: 12, scale: 6, mode: 'number' }).notNull().default(0),
-    logsUrl: text('logs_url'),
-    branch: text('branch'),
-    prUrl: text('pr_url'),
-    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
-    endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
-    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true, mode: 'date' }),
-    cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true, mode: 'date' }),
-    createdAt,
-  },
-  (table) => [
-    index('runs_ticket_idx').on(table.ticketId, table.createdAt),
-    index('runs_project_status_idx').on(table.projectId, table.status),
-    uniqueIndex('runs_one_active_per_ticket_uq')
-      .on(table.ticketId)
-      .where(sql`status in ('queued', 'running')`),
-  ],
-)
-
-export const runEvents = pgTable(
-  'run_events',
-  {
-    id: bigserial('id', { mode: 'number' }).primaryKey(),
-    projectId: uuid('project_id')
-      .notNull()
-      .references(() => projects.id, { onDelete: 'cascade' }),
-    runId: uuid('run_id')
-      .notNull()
-      .references(() => runs.id, { onDelete: 'cascade' }),
-    type: text('type').notNull(),
-    message: text('message'),
-    payload: jsonb('payload').$type<unknown>(),
-    createdAt,
-  },
-  (table) => [index('run_events_run_idx').on(table.runId, table.id)],
 )
 
 export const approvals = pgTable(
@@ -427,6 +394,289 @@ export const webhookDeliveries = pgTable(
   (table) => [uniqueIndex('webhook_deliveries_uq').on(table.provider, table.deliveryId)],
 )
 
+// ---------------------------------------------------------------------------
+// Dual-agent core
+// ---------------------------------------------------------------------------
+
+export const agentSessions = pgTable(
+  'agent_sessions',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    role: sessionRoleEnum('role').notNull(),
+    ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'cascade' }),
+    status: sessionStatusEnum('status').notNull().default('idle'),
+    model: text('model'),
+    preset: text('preset'),
+    externalId: text('external_id'),
+    createdAt,
+    updatedAt,
+    lastTurnAt: timestamp('last_turn_at', { withTimezone: true, mode: 'date' }),
+  },
+  (table) => [
+    uniqueIndex('agent_sessions_main_uq')
+      .on(table.projectId)
+      .where(sql`role = 'main'`),
+    uniqueIndex('agent_sessions_executor_uq')
+      .on(table.ticketId)
+      .where(sql`role = 'executor'`),
+    index('agent_sessions_project_role_idx').on(table.projectId, table.role),
+  ],
+)
+
+export const triggers = pgTable(
+  'triggers',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    channelId: uuid('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+    messageId: uuid('message_id').references(() => messages.id, { onDelete: 'set null' }),
+    provider: text('provider').notNull(),
+    externalId: text('external_id').notNull(),
+    kind: triggerKindEnum('kind').notNull().default('message'),
+    threadKey: text('thread_key'),
+    actorUserId: uuid('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+    actorExternalId: text('actor_external_id'),
+    actorName: text('actor_name'),
+    text: text('text').notNull(),
+    isBot: boolean('is_bot').notNull().default(false),
+    mentionedBot: boolean('mentioned_bot').notNull().default(false),
+    replyTo: text('reply_to'),
+    raw: jsonb('raw').$type<unknown>(),
+    evaluationId: uuid('evaluation_id'),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex('triggers_provider_external_uq').on(table.provider, table.externalId),
+    index('triggers_thread_idx').on(table.projectId, table.channelId, table.threadKey),
+    index('triggers_project_created_idx').on(table.projectId, table.createdAt),
+  ],
+)
+
+export const evaluations = pgTable(
+  'evaluations',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    channelId: uuid('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+    threadKey: text('thread_key').notNull(),
+    policyVersion: text('policy_version').notNull(),
+    status: evaluationStatusEnum('status').notNull().default('queued'),
+    triggerIds: jsonb('trigger_ids').$type<string[]>().notNull().default([]),
+    decision: jsonb('decision').$type<unknown>(),
+    reason: text('reason'),
+    attempts: integer('attempts').notNull().default(0),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex('evaluations_active_uq')
+      .on(table.projectId, table.channelId, table.threadKey)
+      .where(sql`status in ('queued', 'running')`),
+    index('evaluations_project_status_idx').on(table.projectId, table.status),
+  ],
+)
+
+export const mandates = pgTable(
+  'mandates',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    policyVersion: text('policy_version').notNull(),
+    strength: mandateStrengthEnum('strength').notNull(),
+    scope: text('scope').notNull(),
+    matchedRules: jsonb('matched_rules').$type<string[]>().notNull().default([]),
+    basis: jsonb('basis').$type<Record<string, unknown>>().notNull().default({}),
+    requesterTriggerId: uuid('requester_trigger_id').references(() => triggers.id, { onDelete: 'set null' }),
+    requesterUserId: uuid('requester_user_id').references(() => users.id, { onDelete: 'set null' }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+  },
+  (table) => [uniqueIndex('mandates_ticket_uq').on(table.ticketId)],
+)
+
+export const sessionTurns = pgTable(
+  'session_turns',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'cascade' }),
+    evaluationId: uuid('evaluation_id').references(() => evaluations.id, { onDelete: 'set null' }),
+    assignmentId: uuid('assignment_id'),
+    kind: turnKindEnum('kind').notNull(),
+    status: turnStatusEnum('status').notNull().default('queued'),
+    input: jsonb('input').$type<unknown>(),
+    prompt: text('prompt'),
+    result: jsonb('result').$type<unknown>(),
+    error: text('error'),
+    tokens: integer('tokens').notNull().default(0),
+    cost: numeric('cost', { precision: 12, scale: 6, mode: 'number' }).notNull().default(0),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true, mode: 'date' }),
+    cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+  },
+  (table) => [
+    // Queued turns may stack; only one may run per session.
+    uniqueIndex('session_turns_running_uq')
+      .on(table.sessionId)
+      .where(sql`status = 'running'`),
+    index('session_turns_queue_idx').on(table.status, table.createdAt),
+    index('session_turns_ticket_idx').on(table.ticketId, table.createdAt),
+  ],
+)
+
+export const sessionMessages = pgTable(
+  'session_messages',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    turnId: uuid('turn_id').references(() => sessionTurns.id, { onDelete: 'set null' }),
+    role: text('role').notNull(),
+    content: text('content').notNull(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    createdAt,
+  },
+  (table) => [index('session_messages_session_idx').on(table.sessionId, table.createdAt)],
+)
+
+export const ticketSubscriptions = pgTable(
+  'ticket_subscriptions',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    provider: text('provider').notNull(),
+    channelId: uuid('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+    threadKey: text('thread_key').notNull(),
+    kind: subscriptionKindEnum('kind').notNull().default('own'),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex('ticket_subscriptions_uq').on(table.ticketId, table.provider, table.threadKey),
+    index('ticket_subscriptions_thread_idx').on(table.projectId, table.provider, table.threadKey),
+  ],
+)
+
+export const ticketInputs = pgTable(
+  'ticket_inputs',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    triggerId: uuid('trigger_id').references(() => triggers.id, { onDelete: 'set null' }),
+    source: inputSourceEnum('source').notNull(),
+    text: text('text').notNull(),
+    isPerson: boolean('is_person').notNull().default(false),
+    deliveredAt: timestamp('delivered_at', { withTimezone: true, mode: 'date' }),
+    readAt: timestamp('read_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+  },
+  (table) => [index('ticket_inputs_ticket_idx').on(table.ticketId, table.createdAt)],
+)
+
+export const assignments = pgTable(
+  'assignments',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    sessionId: uuid('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    status: assignmentStatusEnum('status').notNull().default('pending'),
+    startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+    endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex('assignments_active_uq')
+      .on(table.ticketId)
+      .where(sql`status in ('pending', 'running')`),
+    index('assignments_ticket_idx').on(table.ticketId, table.createdAt),
+  ],
+)
+
+export const reports = pgTable(
+  'reports',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    assignmentId: uuid('assignment_id').references(() => assignments.id, { onDelete: 'set null' }),
+    turnId: uuid('turn_id').references(() => sessionTurns.id, { onDelete: 'set null' }),
+    status: reportStatusEnum('status').notNull(),
+    summary: text('summary').notNull().default(''),
+    plan: text('plan'),
+    attentionQuestion: text('attention_question'),
+    attentionAnsweredAt: timestamp('attention_answered_at', { withTimezone: true, mode: 'date' }),
+    branch: text('branch'),
+    prUrl: text('pr_url'),
+    tokens: integer('tokens').notNull().default(0),
+    cost: numeric('cost', { precision: 12, scale: 6, mode: 'number' }).notNull().default(0),
+    raw: jsonb('raw').$type<unknown>(),
+    createdAt,
+  },
+  (table) => [index('reports_ticket_idx').on(table.ticketId, table.createdAt)],
+)
+
+export const turnEvents = pgTable(
+  'turn_events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    turnId: uuid('turn_id')
+      .notNull()
+      .references(() => sessionTurns.id, { onDelete: 'cascade' }),
+    type: text('type').notNull(),
+    message: text('message'),
+    payload: jsonb('payload').$type<unknown>(),
+    createdAt,
+  },
+  (table) => [index('turn_events_turn_idx').on(table.turnId, table.id)],
+)
+
 export const schema = {
   users,
   identities,
@@ -440,20 +690,29 @@ export const schema = {
   tickets,
   messages,
   intakeEvents,
-  runs,
-  runEvents,
   approvals,
   auditLogs,
   usage,
   outboxEvents,
   webhookDeliveries,
+  agentSessions,
+  triggers,
+  evaluations,
+  mandates,
+  sessionTurns,
+  sessionMessages,
+  ticketSubscriptions,
+  ticketInputs,
+  assignments,
+  reports,
+  turnEvents,
 }
 
 export type Schema = typeof schema
 export type UserRow = typeof users.$inferSelect
 export type ProjectRow = typeof projects.$inferSelect
 export type TicketRow = typeof tickets.$inferSelect
-export type RunRow = typeof runs.$inferSelect
+
 export type ChannelRow = typeof channels.$inferSelect
 export type MessageRow = typeof messages.$inferSelect
 export type RepoRow = typeof repos.$inferSelect

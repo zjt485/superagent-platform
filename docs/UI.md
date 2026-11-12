@@ -9,7 +9,8 @@
 /invite/:token             邀请预览、接受；接受后展示项目群二维码/链接（或自动入群结果）
 /                          项目列表 + 新建项目
 /projects/:id              项目工作台
-  ?tab=overview            概览：统计、交付配置、最近工单、活跃运行
+  ?tab=overview            概览：统计、交付配置、最近工单、活跃 Turn
+  ?tab=session             Main Session：状态、模型、transcript、Eval Turns
   ?tab=tickets             工单列表、筛选、分页、新建
   ?tab=members             成员、角色、添加/移除
   ?tab=channel             IM 群绑定/解绑、群二维码上传、邀请链接、自动拉群开关（飞书 / 企微自建群）、接入说明
@@ -18,7 +19,7 @@
   ?tab=settings            名称/描述、执行策略、模型、安全说明
   ?tab=audit               审计日志（动作、人、目标、元数据）
   ?tab=usage               Token 趋势、预算使用、每日明细
-/projects/:id/tickets/:tid 工单详情：需求、计划、运行日志、消息、审批
+/projects/:id/tickets/:tid 工单详情：需求、Executor Session、Report、计划、Turn 日志、消息、审批
 ```
 
 导航侧栏展示当前用户加入的项目及活跃工单数；顶部面包屑与主题切换、退出登录在侧栏底部。
@@ -47,7 +48,7 @@
 - 列表加载：`Spinner`；失败：`ErrorState` + 重试；为空：`EmptyState` + 主操作。
 - 表单提交：按钮 `loading`，错误显示为 `ErrorNotice` 或 Toast；成功刷新列表。
 - 危险操作（解绑、移除成员、取消工单、归档）：二次确认弹窗。
-- 工单详情：活跃状态下每 5 秒轮询，Run 日志按需展开；审批/取消/重试按角色和状态显示。
+- 工单详情：活跃状态下每 5 秒轮询；展示 Executor Session、Mandate、最近 Report 与 transcript；Turn 日志按需展开；审批/停止/重试按角色和 stage 显示。
 - 无权限：隐藏不可用操作，并说明所需角色。
 
 ## 响应式
@@ -66,6 +67,7 @@
 | 登录 | `docs/screenshots/01-login.png` |
 | 项目列表 | `docs/screenshots/02-projects.png` |
 | 项目概览 | `docs/screenshots/03-project-overview.png` |
+| Main Session | `docs/screenshots/03b-main-session.png` |
 | 工单列表 | `docs/screenshots/04-tickets.png` |
 | 工单详情 | `docs/screenshots/05-ticket.png` |
 | 邀请与二维码 | `docs/screenshots/06-invites.png`、`06b-invite-qr.png`、`07e-invite.png`、`07f-invite-group.png`（扫码入群） |

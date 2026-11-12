@@ -3,10 +3,11 @@ import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { parseBody, parseQuery, queryOf, requireUser, uuidParam } from '../../http/helpers.js'
 import { requireProjectAccess } from '../../services/access.js'
-import { enqueuePlan, approvePlanAndExecute, cancelTicket, retryTicket } from '../../services/orchestrator.js'
-import { createTicket, getTicketById, listTickets, ticketDetail } from '../../services/tickets.js'
-import { getRun, listRunEvents } from '../../services/runs.js'
-import { forbidden } from '../../errors.js'
+import { createAcceptedTicket, queueExecutorTurn, approvePlan, stopTicket, retryTicket } from '../../dual/engine.js'
+import { listTicketsView, ticketDetailView, runDetailView } from '../../dual/views.js'
+import { channels, tickets } from '../../db/schema.js'
+import { and, eq } from 'drizzle-orm'
+import { forbidden, notFound } from '../../errors.js'
 import { parsePolicy } from '../../domain/policy.js'
 import { TICKET_STATUSES } from '../../domain/status.js'
 
@@ -19,6 +20,7 @@ const createTicketSchema = z.object({
 
 const listQuerySchema = z.object({
   status: z.enum(TICKET_STATUSES).optional(),
+  stage: z.string().trim().max(40).optional(),
   q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),
   offset: z.coerce.number().int().min(0).optional(),
@@ -26,7 +28,6 @@ const listQuerySchema = z.object({
 
 const actionSchema = z.object({ comment: z.string().trim().max(2000).optional() })
 const aliasCreateSchema = createTicketSchema.extend({ projectId: z.string().uuid() })
-
 
 async function createForProject(
   ctx: AppContext,
@@ -37,39 +38,50 @@ async function createForProject(
   const access = await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'member')
   const policy = parsePolicy(access.project.policyJson)
   if (access.role === 'member' && !policy.membersCanCreateTickets) throw forbidden('当前项目不允许普通成员直接建单')
-  if (access.project.status !== 'active') {
-    throw forbidden(`项目当前为 ${access.project.status}，不能新建工单`)
-  }
-  const body_text = body.body.trim()
-  const title = body.title?.trim() || body_text.split('\n')[0]?.slice(0, 120) || '未命名需求'
-  const ticket = await createTicket(ctx, {
-    projectId,
-    channelId: body.channelId ?? null,
-    requesterId: user.id,
-    requesterName: user.name,
+  if (access.project.status !== 'active') throw forbidden(`项目当前为 ${access.project.status}，不能新建工单`)
+  const [channel] = body.channelId
+    ? await ctx.db
+        .select()
+        .from(channels)
+        .where(and(eq(channels.id, body.channelId), eq(channels.projectId, projectId)))
+        .limit(1)
+    : await ctx.db
+        .select()
+        .from(channels)
+        .where(and(eq(channels.projectId, projectId), eq(channels.status, 'active')))
+        .limit(1)
+  const bodyText = body.body.trim()
+  const title = body.title?.trim() || bodyText.split('\n')[0]?.slice(0, 120) || '未命名需求'
+  const ticket = await createAcceptedTicket(ctx, {
+    project: access.project,
+    channel: channel ?? null,
+    trigger: null,
+    actor: { id: user.id, name: user.name },
     title,
-    body: body_text,
+    body: bodyText,
+    scope: `完成「${title}」并提交可评审的改动，不得修改项目策略或权限。`,
+    strength: 'explicit',
     priority: body.priority,
   })
-  let warning: string | undefined
-  try {
-    await enqueuePlan(ctx, ticket)
-  } catch (error) {
-    warning = error instanceof Error ? error.message : String(error)
-    ctx.log.warn({ err: error, ticketId: ticket.id }, 'failed to enqueue plan for console ticket')
-  }
-  return { ticket: await getTicketById(ctx, ticket.id), warning }
+  const turnId = await queueExecutorTurn(ctx, ticket, 'console')
+  return { ticket, turnId, ...(turnId ? {} : { warning: '工单已创建，但未排入 Executor：项目预算或状态不允许启动新的 Run。' }) }
+}
+
+async function ticketForAccess(ctx: AppContext, ticketId: string) {
+  const [ticket] = await ctx.db.select().from(tickets).where(eq(tickets.id, ticketId))
+  if (!ticket) throw notFound('工单不存在')
+  return ticket
 }
 
 export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): void {
-  // Project-scoped routes (the console uses these).
   app.get('/v1/projects/:id/tickets', async (request) => {
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
     const query = parseQuery(listQuerySchema, request)
-    return await listTickets(ctx, projectId, {
+    return await listTicketsView(ctx, projectId, {
       ...(query.status ? { status: query.status } : {}),
+      ...(query.stage ? { stage: query.stage } : {}),
       ...(query.q ? { query: query.q } : {}),
       ...(query.limit ? { limit: query.limit } : {}),
       ...(query.offset ? { offset: query.offset } : {}),
@@ -89,7 +101,7 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
-    return await ticketDetail(ctx, projectId, uuidParam(request, 'ticketId'))
+    return await ticketDetailView(ctx, projectId, uuidParam(request, 'ticketId'))
   })
 
   app.post('/v1/projects/:id/tickets/:ticketId/approve', async (request) => {
@@ -98,15 +110,15 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
     const body = parseBody(actionSchema, request)
     const ticketId = uuidParam(request, 'ticketId')
-    const run = await approvePlanAndExecute(ctx, ticketId, user, body.comment)
-    return { run, ticket: await getTicketById(ctx, ticketId) }
+    const ticket = await approvePlan(ctx, projectId, ticketId, user, body.comment)
+    return { ticket }
   })
 
   app.post('/v1/projects/:id/tickets/:ticketId/cancel', async (request) => {
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
-    const ticket = await cancelTicket(ctx, uuidParam(request, 'ticketId'), user)
+    const ticket = await stopTicket(ctx, projectId, uuidParam(request, 'ticketId'), user, 'console')
     return { ticket }
   })
 
@@ -114,12 +126,10 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
-    const ticketId = uuidParam(request, 'ticketId')
-    const run = await retryTicket(ctx, ticketId, user)
-    return { run, ticket: await getTicketById(ctx, ticketId) }
+    const ticket = await retryTicket(ctx, projectId, uuidParam(request, 'ticketId'), user)
+    return { ticket }
   })
 
-  // Plan-compatible aliases from §10: /v1/tickets, /v1/tickets/:id.
   app.post('/v1/tickets', async (request, reply) => {
     const user = requireUser(request)
     const body = parseBody(aliasCreateSchema, request)
@@ -135,54 +145,49 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     if (!projectId) throw forbidden('缺少 projectId')
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
     const query = parseQuery(listQuerySchema, request)
-    return await listTickets(ctx, projectId, { ...query, ...(query.q ? { query: query.q } : {}) })
+    return await listTicketsView(ctx, projectId, { ...query, ...(query.q ? { query: query.q } : {}) })
   })
 
   app.get('/v1/tickets/:id', async (request) => {
     const user = requireUser(request)
-    const ticket = await getTicketById(ctx, uuidParam(request))
+    const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin)
-    return await ticketDetail(ctx, ticket.projectId, ticket.id)
+    return await ticketDetailView(ctx, ticket.projectId, ticket.id)
   })
 
   app.post('/v1/tickets/:id/approve', async (request) => {
     const user = requireUser(request)
-    const ticket = await getTicketById(ctx, uuidParam(request))
+    const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
     const body = parseBody(actionSchema, request)
-    const run = await approvePlanAndExecute(ctx, ticket.id, user, body.comment)
-    return { run, ticket: await getTicketById(ctx, ticket.id) }
+    return { ticket: await approvePlan(ctx, ticket.projectId, ticket.id, user, body.comment) }
   })
 
   app.post('/v1/tickets/:id/cancel', async (request) => {
     const user = requireUser(request)
-    const ticket = await getTicketById(ctx, uuidParam(request))
+    const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
-    return { ticket: await cancelTicket(ctx, ticket.id, user) }
+    return { ticket: await stopTicket(ctx, ticket.projectId, ticket.id, user, 'console') }
   })
 
   app.post('/v1/tickets/:id/retry', async (request) => {
     const user = requireUser(request)
-    const ticket = await getTicketById(ctx, uuidParam(request))
+    const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
-    const run = await retryTicket(ctx, ticket.id, user)
-    return { run, ticket: await getTicketById(ctx, ticket.id) }
+    return { ticket: await retryTicket(ctx, ticket.projectId, ticket.id, user) }
   })
 
   app.get('/v1/runs/:id', async (request) => {
     const user = requireUser(request)
-    const run = await getRun(ctx, uuidParam(request))
-    await requireProjectAccess(ctx, run.projectId, user.id, user.isAdmin)
-    return { run, events: await listRunEvents(ctx, run.id) }
+    const result = await runDetailView(ctx, uuidParam(request))
+    await requireProjectAccess(ctx, result.run.projectId, user.id, user.isAdmin)
+    return result
   })
 
   app.get('/v1/runs/:id/events', async (request) => {
     const user = requireUser(request)
-    const run = await getRun(ctx, uuidParam(request))
-    await requireProjectAccess(ctx, run.projectId, user.id, user.isAdmin)
-    const limit = Number(queryOf(request).limit ?? 200)
-    return { items: await listRunEvents(ctx, run.id, Number.isFinite(limit) ? limit : 200) }
+    const result = await runDetailView(ctx, uuidParam(request))
+    await requireProjectAccess(ctx, result.run.projectId, user.id, user.isAdmin)
+    return { items: result.events }
   })
 }
-
-

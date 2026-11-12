@@ -5,6 +5,7 @@ import { Badge, Button, ConfirmButton, ErrorNotice, ErrorState, PageHeader, Spin
 import { labelOf } from '../format'
 import { canMaintain, isOwner, type ProjectTabProps } from './project/types'
 import { OverviewTab } from './project/OverviewTab'
+import { MainSessionTab } from './project/MainSessionTab'
 import { TicketsTab } from './project/TicketsTab'
 import { MembersTab } from './project/MembersTab'
 import { ChannelTab } from './project/ChannelTab'
@@ -14,11 +15,12 @@ import { SettingsTab } from './project/SettingsTab'
 import { AuditTab } from './project/AuditTab'
 import { UsageTab } from './project/UsageTab'
 
-const TAB_KEYS = ['overview', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
+const TAB_KEYS = ['overview', 'session', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
   overview: '概览',
+  session: 'Main Session',
   tickets: '工单',
   members: '成员',
   channel: 'IM 群',
@@ -75,7 +77,7 @@ export function ProjectPage() {
   }
 
   const tabProps: ProjectTabProps = { project, role, refresh: state.reload, onNavigate: setTab }
-  const visibleTabs = (['overview', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as TabKey[]).filter(
+  const visibleTabs = (['overview', 'session', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as TabKey[]).filter(
     (key) => {
       if ((key === 'invites' || key === 'audit') && role === 'viewer') return false
       return true
@@ -171,6 +173,7 @@ export function ProjectPage() {
       <Tabs items={visibleTabs.map((key) => ({ key, label: TAB_LABELS[key] }))} value={tab} onChange={setTab} />
 
       {tab === 'overview' ? <OverviewTab {...tabProps} /> : null}
+      {tab === 'session' ? <MainSessionTab {...tabProps} /> : null}
       {tab === 'tickets' ? <TicketsTab {...tabProps} /> : null}
       {tab === 'members' ? <MembersTab {...tabProps} /> : null}
       {tab === 'channel' ? <ChannelTab {...tabProps} /> : null}

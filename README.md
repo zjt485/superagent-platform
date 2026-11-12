@@ -10,7 +10,8 @@
 ## 当前状态
 
 - **可运行**：控制面 API、Web 控制台、Worker、飞书 / 企业微信适配、GitHub App 适配、PGlite/Postgres、DB/Redis 队列、Outbox 通知、Docker Compose 部署文件与文档均已实现。
-- **开箱即用的是演示链路**：`pnpm demo` 使用 Mock GitHub + Fake Agent Runtime，在没有外部凭据的机器上跑通「工单 → 计划 → 执行 → PR → 合并关闭」。
+- **核心是双 Agent**：每个项目一个持久 **Main Session**（Trigger → Eval/Decision → Ticket/Mandate），每张工单一个持久 **Executor Session**（Assignment → Report → PR）。旧的 plan/execute Run 已移除。
+- **开箱即用的是演示链路**：`pnpm demo` 使用 Mock GitHub + Fake Agent Runtime，在没有外部凭据的机器上跑通「@bot → Main Session → Executor Session → PR → 合并关闭」。
 - **接真实环境需要配置**：飞书应用、GitHub App、Postgres/Redis，以及实现了 DSH headless 调用约定的 `AGENT_COMMAND`（见 [部署文档](docs/DEPLOYMENT.md)）。
 - 已知限制与和原方案的差异见 [STATUS.md](docs/STATUS.md)。
 
@@ -31,8 +32,9 @@ pnpm demo           # 初始化演示数据、跑通一次工单，并在 :3100 
 
 1. 创建项目「演示项目」，绑定 Mock 仓库 `demo-org/hello-world` 和飞书群 `oc_demo_project`；
 2. 生成一条邀请链接，接受后会显示项目群二维码与入群链接；
-3. 创建一张工单，由 Worker 依次执行 **plan → execute**，在工作区产生真实文件改动，提交到 `agent/*` 分支并创建 Mock PR；
-4. 把「计划已生成」「开始执行」「PR 已创建」推送到模拟飞书群（终端输出）。
+3. 模拟一条 @bot 消息进入 **Main Session**，由它做 Decision 创建工单和 Mandate；
+4. **Executor Session** 领取 Turn，在工作区产生真实文件改动，平台提交到 `agent/*` 分支并创建 Mock PR；
+5. 把「已接单」「PR 已创建」推送到模拟飞书群（终端输出）。
 
 > 想重新开始：停止 demo，删除 `platform/server/data` 后再次执行 `pnpm demo`。
 
@@ -62,36 +64,43 @@ pnpm check      # typecheck + test + build
 | 成员与角色 | Owner / Maintainer / Member / Viewer；邀请二维码、角色变更、移除 |
 | 扫码入项目 + 入群 | 扫项目邀请二维码 → OAuth 登录 → 加入项目；随后展示项目群二维码/邀请链接，飞书可自动拉群 |
 | IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信（回调验签/解密、OAuth、群机器人发送、应用自建群自动拉群、群二维码兜底） |
-| @bot 接单 | 确定性 Mention Router：只处理 @bot、命令、已有工单线程回复；非 @ 普通消息忽略 |
+| @bot 接单 | Main Session 只评估项目成员的 @bot Trigger；非 @、非成员、非项目群忽略；线程回复直接作为 Input |
 | 命令 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` |
-| 工单生命周期 | new → triaged → planned → running → waiting_review → done，失败/取消分支 |
-| Agent 执行 | plan / execute 两阶段 Run，独立工作目录，超时、取消、失败重试一次 |
+| Main Session | 每项目一个持久 Session；Eval → Decision（accept/ignore/attach/stop）→ Ticket + Mandate + 回复 |
+| Executor Session | 每工单一个持久 Session；Assignment → Report（progress/waiting/ready/blocked/failed/dropped）→ PR |
+| 工单阶段 | queued / working / plan_review / idle / review / blocked / failed / answer / done / cancelled |
+| 审批 | 计划审批是 Executor 内部的门；批准写 approval Input 后续跑 |
+| 订阅 / Input | 工单订阅自己的线程；线程消息、PR 评论、审批、Policy 变更都以 Input 投递 |
 | GitHub | GitHub App installation token、分支推送、PR 创建、PR 合并/关闭、评论续跑、CI 状态回传 |
 | 审批 | 计划审批（可配置强制）、PR 不自动合并、审批记录 |
 | 通知 | Outbox 事务表 + 幂等发送 + 指数退避重试；无 IM 凭据时演示为模拟发送 |
-| 审计 | 项目、成员、仓库、群、邀请、消息、工单、Run、审批、通知全链路 |
-| 配额 | 每项目并发 Run 数、每日 Token 预算、单次运行超时、全局 Worker 并发 |
-| 控制台 | 项目、工单详情、运行日志、成员、仓库、群、邀请二维码、策略、审计、用量 |
+| 审计 | Trigger → Eval/Decision → Ticket/Mandate → Turn/Report → PR/Approval 全链路 |
+| 配额 | 每项目并发 Executor Turn、每日 Token 预算、单次运行超时、全局 Worker 并发 |
+| 控制台 | 项目、Main Session、工单/Executor Session、Turn 日志、成员、仓库、群、邀请、策略、审计、用量 |
 | 部署 | Dockerfile + Compose（api / worker / postgres / redis / caddy），HTTPS，健康检查 |
 
 ## 架构
 
 ```text
-飞书 / 企业微信 ── webhook ──► Channel Gateway ─┐
-GitHub ───────── webhook ──► GitHub Adapter ────┤
-Web 控制台 ───── HTTPS ────► Console / API ─────┤
-                                                ├─ Postgres（项目、工单、运行、审计）
-                                                ├─ Redis / BullMQ（可选）或 DB 队列表
-                                                └─ Worker 调度
-                                                       │
-                                                独立工作目录 + Agent Runtime（DSH headless）
-                                                       │
-                                                agent/* 分支 → PR
+飞书/企业微信 ── webhook ──► Trigger ──► Eval 队列 ──► Main Session（每项目一个）
+GitHub ──────── webhook ──► Ticket Input ──┐                 │ Decision
+Web 控制台 ───── HTTPS ────► Console/API ───┼──────► Ticket + Mandate
+                                           │                 │ Assignment
+                                           │                 ▼
+                                           │        Executor Session（每工单一个）
+                                           │                 │ Report
+                                           └──── report/PR ◄─┘
+                                                             │
+                                                    agent/* 分支 → PR
 ```
 
+- Main Session 只路由：读 Policy、Trigger、开放工单和 transcript，返回 decisions；不执行代码。
+- Executor Session 只做单张工单：持久目录与 transcript，返回 reports；平台负责 commit/push/PR。
+- 所有模型调用都是 `session_turns` 中的 Turn；一个 Session 同时只有一个 running Turn。
+
 - **控制面不执行 shell**：API 只做鉴权、状态与调度。
-- **每次 Run 独立工作目录**：按 `project_id/run_id` 创建，Run 结束清理；不跨项目复用。
-- **DSH 只做 Agent Runtime**：通过 `AgentRuntime` 接口接入；演示环境使用 FakeRuntime。
+- **每张工单独立目录**：Executor Session 在 `${project}/tickets/${ticket}` 持久工作，不跨项目复用。
+- **DSH 只做 Agent Runtime**：通过 `TurnRuntime` 接入；演示环境使用 `FakeTurnRuntime`。
 - **GitHub 用 App 短期 token**：按任务下发 installation token，任务结束失效。
 - **IM Adapter 统一接口**：`verifyAndParse` / `send`，飞书与企业微信各自封装协议差异。
 
@@ -100,17 +109,16 @@ platform/
 ├── server/                     # Node.js 22 + TypeScript + Fastify + Drizzle
 │   ├── src/
 │   │   ├── app/                # Fastify 组装、路由
-│   │   ├── services/           # 项目、邀请、工单、运行、编排、审计、Outbox、接入
-│   │   ├── domain/             # 状态机、Mention Router、命令、端口接口
+│   │   ├── dual/               # Main/Executor Session、Engine、Prompt、Runtime、Worker、Views
+│   │   ├── services/           # 项目、邀请、接入、GitHub webhook、审计、Outbox
+│   │   ├── domain/             # 状态、命令、策略、消息、IM/GitHub 端口
 │   │   ├── db/                 # Drizzle schema 与迁移
 │   │   ├── im/                 # 飞书 / 企业微信适配（验签、加解密、发送、OAuth）
 │   │   ├── github/             # GitHub App 客户端与 webhook 验签
-│   │   ├── runtime/            # Fake / 外部命令 Agent Runtime
-│   │   ├── worker/             # 领取任务、克隆、执行、提交、开 PR
-│   │   └── queue/              # DB 队列 / BullMQ
+│   │   └── worker/             # Git 交付、Worker 入口、进程内联 Worker
 │   ├── drizzle/                # SQL 迁移
 │   ├── public/                 # 构建后的 Web 控制台
-│   └── tests/                  # Vitest：领域、适配器、API、端到端
+│   └── tests/                  # Vitest：双 Agent 核心、服务、适配器、Webhook
 ├── web/                        # React 18 + Vite + TypeScript 控制台
 ├── docs/                       # 架构、API、部署、状态、UI 说明
 ├── deploy/                     # Agent Runtime wrapper 模板
@@ -120,9 +128,9 @@ platform/
 
 ## 界面
 
-| 登录 | 工单详情 |
+| Main Session | 工单 / Executor Session |
 | --- | --- |
-| ![登录](docs/screenshots/01-login.png) | ![工单](docs/screenshots/05-ticket.png) |
+| ![Main Session](docs/screenshots/03b-main-session.png) | ![工单](docs/screenshots/05-ticket.png) |
 
 | 邀请二维码 | 扫码入群 |
 | --- | --- |
@@ -136,7 +144,8 @@ platform/
 
 ## 文档
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md)：模块职责、数据模型、请求链路、状态机、Queue/Outbox、安全设计
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md)：双 Agent 模型、数据模型、请求链路、Turn/Report、Queue/Outbox、安全设计
+- [REWRITE.md](docs/REWRITE.md)：本次从 plan/execute Run 迁移到 Main/Executor Session 的目标与协议
 - [API.md](docs/API.md)：REST API、Webhook、内部接口、鉴权与错误码
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md)：Docker Compose、飞书/GitHub App 配置、Agent Runtime 接入、备份与运维
 - [STATUS.md](docs/STATUS.md)：FR / 验收标准逐条对照、测试映射、与方案的差异和已知限制

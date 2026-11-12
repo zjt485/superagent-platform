@@ -116,7 +116,10 @@ export function TicketPage() {
   const role: MemberRole = state.data.role
   const canMaintain = role === 'owner' || role === 'maintainer'
   const ticket = detail.ticket
-  const active = ACTIVE_STATUSES.includes(ticket.status)
+  const stage = ticket.stage ?? ticket.status
+  const active = !['done', 'cancelled'].includes(stage)
+  const planAwaiting = stage === 'plan_review' || ticket.status === 'planned'
+  const retryable = stage === 'failed' || stage === 'blocked'
 
   const act = async (action: 'approve' | 'cancel' | 'retry') => {
     setError(null)
@@ -142,7 +145,7 @@ export function TicketPage() {
           <div>
             <div className="ticket-meta">
               <code className="mono">#{shortId(ticket.id)}</code>
-              <Badge status={ticket.status} label={labelOf(ticket.status)} />
+              <Badge status={stage} label={labelOf(stage)} />
               <span>优先级 {ticket.priority}</span>
               <span>创建于 {formatDate(ticket.createdAt)}</span>
             </div>
@@ -166,12 +169,12 @@ export function TicketPage() {
             <Button size="sm" variant="subtle" onClick={state.reload}>
               刷新
             </Button>
-            {canMaintain && ticket.status === 'planned' ? (
+            {canMaintain && planAwaiting ? (
               <Button size="sm" variant="primary" onClick={() => void act('approve')}>
                 批准计划并执行
               </Button>
             ) : null}
-            {canMaintain && (ticket.status === 'failed' || ticket.status === 'cancelled') ? (
+            {canMaintain && retryable ? (
               <Button size="sm" variant="primary" onClick={() => void act('retry')}>
                 重试
               </Button>
@@ -180,13 +183,13 @@ export function TicketPage() {
               <ConfirmButton
                 size="sm"
                 variant="danger"
-                title="取消工单"
-                message="取消后运行中的 Agent 会被终止，排队的 Run 会被取消。"
-                confirmLabel="取消工单"
+                title="停止工单"
+                message="停止会撤销 Mandate，取消排队中的 Turn，并请求终止正在执行的 Executor。"
+                confirmLabel="停止工单"
                 danger
                 onConfirm={() => act('cancel')}
               >
-                取消
+                停止
               </ConfirmButton>
             ) : null}
           </div>
@@ -205,6 +208,76 @@ export function TicketPage() {
             <div className="ticket-body">{ticket.body}</div>
           </Card>
 
+          <Card
+            title="Executor Session"
+            extra={<Badge status={detail.session?.status ?? 'idle'} label={detail.session ? detail.session.status : '尚未创建'} />}
+          >
+            {detail.session ? (
+              <div className="stack">
+                <dl className="kv-list">
+                  <div>
+                    <dt>Session</dt>
+                    <dd>
+                      <code className="mono">{detail.session.id}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>模型 / Preset</dt>
+                    <dd>
+                      {detail.session.model ?? '—'} · <code className="mono">{detail.session.preset ?? '—'}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Mandate</dt>
+                    <dd>
+                      {detail.mandate
+                        ? `${detail.mandate.strength} · Policy ${detail.mandate.policyVersion} · 范围：${detail.mandate.scope}`
+                        : '—'}
+                    </dd>
+                  </div>
+                </dl>
+                {detail.reports.length > 0 ? (
+                  <div className="timeline">
+                    {detail.reports.slice(0, 6).map((report) => (
+                      <div className="timeline__item" key={report.id}>
+                        <span className="timeline__dot" data-tone={report.status === 'ready' ? 'success' : report.status === 'failed' ? 'danger' : 'info'} />
+                        <div className="timeline__content">
+                          <strong>
+                            Report · {report.status} · {formatDate(report.createdAt)}
+                          </strong>
+                          <p>{report.summary}</p>
+                          {report.plan ? <p className="small muted">计划：{report.plan.slice(0, 300)}</p> : null}
+                          {report.attentionQuestion ? <p>问题：{report.attentionQuestion}</p> : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <EmptyState title="Executor 还没有报告" hint="领取任务后会写入 progress / ready / blocked 等 Report。" />
+                )}
+                {detail.transcript.length > 0 ? (
+                  <div className="message-list">
+                    {detail.transcript.slice(-6).map((message, index) => (
+                      <div className="message" key={`${message.role}-${index}`}>
+                        <div className="message__head">
+                          <span>{message.role === 'assistant' ? 'Executor 报告' : '输入'}</span>
+                        </div>
+                        <div className="message__text">{message.content.slice(0, 800)}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {detail.inputs.length > 0 ? (
+                  <p className="small muted">
+                    已投递 {detail.inputs.filter((input) => input.deliveredAt).length} / {detail.inputs.length} 条 Input
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <EmptyState title="还没有 Executor Session" hint="Main Session 接受需求后会为这张工单创建独立 Executor Session。" />
+            )}
+          </Card>
+
           {ticket.plan ? (
             <Card title="执行计划" extra={ticket.planApprovedAt ? <Badge tone="success" label="已批准" /> : <Badge tone="warning" label="待批准" />}>
               <div className="plan-box">{ticket.plan}</div>
@@ -212,15 +285,15 @@ export function TicketPage() {
           ) : null}
 
           <Card
-            title="运行记录"
+            title="Session Turns"
             extra={
               <span className="small muted">
-                {detail.runs.length} 次运行 · {detail.runs.filter((run) => run.status === 'succeeded').length} 成功
+                {detail.runs.length} 个 Turn · {detail.runs.filter((run) => run.status === 'succeeded').length} 成功
               </span>
             }
           >
             {detail.runs.length === 0 ? (
-              <EmptyState title="还没有运行记录" hint="工单入队后，Worker 领取任务会在这里显示计划与执行。" />
+              <EmptyState title="还没有 Turn" hint="Executor Session 领取任务后会在这里显示每次模型调用与工具执行。" />
             ) : (
               <div className="run-list">
                 {detail.runs.map((run) => (
@@ -259,9 +332,9 @@ export function TicketPage() {
                 </dd>
               </div>
               <div>
-                <dt>状态</dt>
+                <dt>阶段</dt>
                 <dd>
-                  <Badge status={ticket.status} label={labelOf(ticket.status)} />
+                  <Badge status={stage} label={labelOf(stage)} />
                 </dd>
               </div>
               <div>

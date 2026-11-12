@@ -106,6 +106,10 @@ export interface Ticket {
   branch: string | null
   lastRunId: string | null
   closedAt: string | null
+  stage: string | null
+  policyVersion: string | null
+  endedReason: string | null
+  endedAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -170,6 +174,64 @@ export interface TicketDetail {
   messages: Message[]
   intake: IntakeEvent[]
   ref: string
+  stage: string | null
+  mandate: {
+    id: string
+    policyVersion: string
+    strength: string
+    scope: string
+    matchedRules: string[]
+    revokedAt: string | null
+    createdAt: string
+  } | null
+  reports: ExecutorReport[]
+  inputs: ExecutorInput[]
+  session: AgentSession | null
+  transcript: { role: string; content: string }[]
+  assignments: { id: string; status: string; startedAt: string | null; endedAt: string | null; createdAt: string }[]
+  subscriptions: { id: string; threadKey: string; provider: string; kind: string }[]
+  turns: Run[]
+}
+
+export interface AgentSession {
+  id: string
+  projectId: string
+  role: 'main' | 'executor'
+  ticketId: string | null
+  status: string
+  model: string | null
+  preset: string | null
+  createdAt: string
+  lastTurnAt: string | null
+}
+
+export interface ExecutorReport {
+  id: string
+  status: string
+  summary: string
+  plan: string | null
+  attentionQuestion: string | null
+  branch: string | null
+  prUrl: string | null
+  tokens: number
+  cost: number
+  createdAt: string
+}
+
+export interface ExecutorInput {
+  id: string
+  source: string
+  text: string
+  isPerson: boolean
+  deliveredAt: string | null
+  readAt: string | null
+  createdAt: string
+}
+
+export interface MainSessionView {
+  session: AgentSession | null
+  transcript: { role: string; content: string }[]
+  turns: Run[]
 }
 
 export interface Member {
@@ -320,6 +382,7 @@ export const api = {
     overview: (projectId: string) => request<Overview>(`/v1/projects/${projectId}/overview`),
     audit: (projectId: string, limit = 100) => request<{ items: AuditEntry[] }>(`/v1/projects/${projectId}/audit?limit=${limit}`),
     usage: (projectId: string, days = 30) => request<{ series: UsageDay[]; todayTokens: number; policy: Policy }>(`/v1/projects/${projectId}/usage?days=${days}`),
+    mainSession: (projectId: string) => request<MainSessionView>(`/v1/projects/${projectId}/main-session`),
   },
 
   tickets: {

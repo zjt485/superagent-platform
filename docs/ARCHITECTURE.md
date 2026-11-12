@@ -1,289 +1,207 @@
-# 架构设计
+# 架构设计（双 Agent 核心）
 
-本文说明 Superagent Platform MVP 的实现方式，以及它如何对应 `DEVELOPMENT_PLAN.md` 的模块、流程与约束。
+本服务按 `DEVELOPMENT_PLAN.md` 与 dsh-superagent 的领域模型重构为 **Main Session / Executor Session 双 Agent**：
 
-## 1. 目标与边界
+- **每个项目一个持久 Main Session**：接收 Trigger、做 Eval/Decision、创建 Ticket/Mandate、路由和回复。
+- **每张工单一个持久 Executor Session**：在独立目录里工作，通过 Report 汇报 progress / waiting / ready / blocked / failed / dropped。
+- 鉴权、项目/成员、IM、GitHub、Outbox、审计与控制台作为**服务壳**复用。
 
-一个部署单元服务多个项目：
+> 旧版“确定性 intake + plan/execute Runs”已移除。数据库中的 `runs` / `run_events` 在迁移 0004 中删除。
 
-- 每个项目绑定**一个** GitHub 仓库、**一组成员**、**一套策略**、**一个主 IM 群**；
-- 平台级每个 IM 平台一个 bot，按 `chat_id` 路由到项目；
-- 只处理 @bot、命令、以及已有工单线程内的回复；
-- Agent 在隔离工作目录中执行，产出 `agent/*` 分支与 PR；
-- 控制台、审计与工单数据都在平台内，IM 只是通道。
-
-不在 MVP 内：多仓库、自动合并、计费、跨项目记忆、LLM 消息 Router、插件市场、私有化交付。
-
-## 2. 进程与模块
+## 1. 进程与模块
 
 ```text
 ┌──────────────────────────── api 进程 ────────────────────────────┐
 │ Fastify                                                            │
-│  ├─ /webhooks/feishu|wecom  Channel Gateway（验签、解密、去重）    │
-│  ├─ /webhooks/github        GitHub Adapter（签名、PR/评论/CI）     │
-│  ├─ /v1/*                   Console API（会话、RBAC、项目/工单）   │
-│  ├─ /internal/*             Worker 事件回传（服务 token）          │
+│  ├─ /webhooks/feishu|wecom  Channel Gateway → Trigger             │
+│  ├─ /webhooks/github        PR/评论/CI → Ticket Input             │
+│  ├─ /v1/*                   Console API（项目/工单/会话/审计）      │
+│  ├─ /internal/*             Turn 事件回传                          │
 │  └─ /healthz /readyz /metrics                                      │
-│ 后台循环：Outbox 发送 · 失联 Run 回收 · 过期会话清理               │
+│ 后台循环：Outbox 发送 · 失联 Turn 回收 · 过期会话清理               │
 └───────────────┬──────────────────────────────┬────────────────────┘
                 │ Postgres                      │ Redis/BullMQ（可选）
 ┌───────────────▼──────────────────────────────▼────────────────────┐
 │ worker 进程                                                        │
-│  claimNextRun / BullMQ Worker → executeClaimedRun                  │
-│  克隆仓库 → AgentRuntime(plan|execute) → commit → push → PR        │
-│  事件回传 run_events → 工单状态推进 → Outbox 通知                  │
+│  claimNextTurn → Main eval 或 Executor execute                     │
+│  Main: packet → TurnRuntime → Decision → Engine                    │
+│  Executor: 持久目录 → TurnRuntime → Report → 平台交付 PR           │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
 | 模块 | 代码位置 | 职责 |
 | --- | --- | --- |
-| Channel Gateway | `src/im/*`、`src/app/routes/webhooks.ts` | 验签/解密、事件归一化、消息去重、发送消息、OAuth |
-| Mention Router | `src/domain/intake.ts`、`src/services/intake.ts` | 确定性分流：群绑定、@bot、命令、工单线程、成员、项目状态 |
-| Project Service | `src/services/projects.ts` | 项目 CRUD、成员、仓库、群、installation |
-| Ticket Service | `src/services/tickets.ts` | 建单、追加、状态机、审批、关闭 |
-| Orchestrator | `src/services/orchestrator.ts` | 计划/执行 Run、配额、重试、失联回收、通知 |
-| Worker | `src/worker/*` | 领取任务、工作目录、Git、PR、结果回传 |
-| GitHub Adapter | `src/github/*` | App JWT、installation token、PR、webhook |
-| Notification/Outbox | `src/services/outbox.ts`、`notifications.ts` | 事务内入队、幂等发送、退避重试 |
-| Web Console | `web/src/*` | 项目、工单、运行、成员、群、邀请、审计、用量 |
-| Audit/Usage | `src/services/audit.ts`、`usage.ts` | 审计与 Token/成本统计 |
+| Channel Gateway | `src/im/*`、`src/app/routes/webhooks.ts` | 验签/解密、归一化、去重、发送、OAuth |
+| Intake | `src/services/intake.ts` | 消息 → Trigger；未绑定群 `/bind` |
+| Dual Engine | `src/dual/engine.ts` | Trigger 入库、Eval、Decision、Ticket/Mandate、Input、停/重试、PR 事件 |
+| Sessions | `src/dual/sessions.ts` | Main/Executor Session、Turn 队列、Transcript、心跳、取消 |
+| Prompts | `src/dual/prompts.ts` | 两个角色各自的系统提示词与 JSON 协议 |
+| Runtime | `src/dual/runtime.ts` | Fake / 外部命令 Agent Runtime，写入 `result.json` |
+| Worker | `src/dual/worker.ts` | 执行 Turn、工作区、Git/PR、Report |
+| Views | `src/dual/views.ts` | 控制台 DTO、Main Session 视图、Turn 映射 |
+| Service shell | `src/services/projects.ts`、`auth.ts`、`invites.ts`、`outbox.ts`、`audit.ts` | 项目、成员、邀请、通知、审计 |
+| Console | `web/src/*` | 项目/工单/会话/运行/审计/用量 |
 
-## 3. 端到端：一条 @bot 消息
+## 2. 核心模型
+
+| 概念 | 持久化 | 说明 |
+| --- | --- | --- |
+| Main Session | `agent_sessions(role=main)` | 每个项目唯一；持久 transcript |
+| Executor Session | `agent_sessions(role=executor, ticket_id)` | 每张工单唯一；持久 transcript + 目录 |
+| Trigger | `triggers` | 一条 IM/GitHub 事件，`(provider, external_id)` 唯一 |
+| Thread | `(project, provider, channel, thread_key)` | 订阅匹配键 |
+| Eval | `evaluations` | 同一线程一个活跃 Eval；批量 Trigger |
+| Decision | `evaluations.decision` | accept / ignore / attach / stop |
+| Mandate | `mandates` | 工单的授权：Policy 版本、强度、scope、basis |
+| Ticket | `tickets` | `stage` 是事实；`status` 是控制台兼容投影 |
+| Subscription | `ticket_subscriptions` | 工单订阅自己的线程（本期只有 `own`） |
+| Assignment | `assignments` | 一次 Executor Turn 的派工 |
+| Report | `reports` | Executor 的结果/状态/问题/PR |
+| Input | `ticket_inputs` | 线程消息、审批、Policy 通知等 |
+| Turn | `session_turns` | 一次模型调用；队列与审计单位 |
+
+## 3. 流程
+
+### 3.1 新需求
 
 ```mermaid
 sequenceDiagram
-  participant U as 成员（飞书群）
-  participant F as 飞书
-  participant API as Channel Gateway/API
+  participant IM as 飞书/企微
+  participant API as Gateway/API
   participant DB as Postgres
   participant W as Worker
-  participant G as GitHub
+  participant MS as Main Session
+  participant ES as Executor Session
 
-  U->>F: @bot 把登录页报错文案改成中文
-  F->>API: POST /webhooks/feishu（加密+签名）
-  API->>API: 验签、解密、url_verification、事件去重
-  API->>DB: messages(provider, provider_message_id) 唯一插入
-  API->>DB: 查 channel / project / member / thread ticket
-  API->>DB: intake_events(action=ticket_created)
-  API->>DB: tickets(new) + outbox(已接单)
-  API->>DB: runs(plan, queued)
-  API-->>F: 200（5 秒内）
-  F-->>U: 已接单回执（Outbox 发送）
-  W->>DB: claimNextRun（项目并发/状态校验）
-  W->>G: 获取 installation token、克隆仓库
-  W->>W: AgentRuntime(plan) → result.json
-  W->>DB: run(succeeded)、ticket(planned)
-  alt planApproval=required
-    W->>DB: outbox(等待审批)
-    U->>API: /approve 或控制台批准
-    API->>DB: approvals(plan, approved) + runs(execute)
-  else auto
-    W->>DB: 自动批准 + 执行 Run
-  end
-  W->>W: AgentRuntime(execute) → 文件改动
-  W->>G: commit agent/* → push → create PR
-  W->>DB: run(succeeded)、ticket(waiting_review)、outbox(PR 链接)
-  U->>G: 人工评审并合并
-  G->>API: pull_request closed + merged
-  API->>DB: ticket(done) + outbox(完成)
+  IM->>API: @bot 需求
+  API->>DB: messages + triggers（验签/去重）
+  API->>DB: evaluations(queued) + turn(eval)
+  W->>DB: claimNextTurn
+  W->>MS: Trigger 批次 + Policy + 开放工单 + Transcript
+  MS-->>W: decisions(JSON)
+  W->>DB: ticket + mandate + subscription + assignment + turn(execute)
+  W->>ES: 工单 + Mandate + Inputs + Transcript
+  ES-->>W: report(progress/plan/ready/...)
+  W->>DB: report + stage
+  W->>W: ready → commit/push/PR（平台执行）
+  W->>DB: ticket.review + Outbox(PR)
+  IM->>API: PR 合并 webhook
+  API->>DB: ticket.done + Outbox(完成)
 ```
 
-### 幂等与去重
+### 3.2 新请求的准入
 
-| 层 | 键 | 行为 |
+本期只把 **项目成员在绑定群内 @bot** 的消息送入 Eval。非成员、非 @、非项目群一律忽略；不做推断候选、bot 名单和 admission 表。
+
+### 3.3 线程回复
+
+- 工单创建时写入 `ticket_subscriptions(own, provider, thread_key)`。
+- 订阅线程上的消息直接写 `ticket_inputs`，**不再走 Eval**。
+- 工单处于 `review`/`idle`/`blocked`/`failed` 或已结束后收到人消息时，更新为 `queued` 并入队新的 Executor Turn；`plan_review` 阶段的人消息等待审批。
+- 被人工停止（Mandate 撤销）的工单不会因输入自动恢复。
+
+### 3.4 Plan approval
+
+计划审批不是第二个 Agent，而是 Executor Session 内部的门：
+
+1. `policy.planApproval=required` 且 `ticket.plan` 为空：Executor 第一轮只返回 `progress` + `plan`；
+2. Ticket 进入 `plan_review`，通知 Maintainer；
+3. 人批准 → 写 `approval` Input、记录 `approvals`、入队下一轮；
+4. Executor 读到 `planApproved=true` 后执行并返回 `ready`。
+
+### 3.5 PR 与结束
+
+- Executor 只改工作区；平台创建 `agent/<short-id>` 分支、commit、push、PR（沿用仓库保护）。
+- `ready` → `review` + PR 通知；PR 合并 → `done`；关闭未合并 → `cancelled`。
+- 当前只跟踪一张 PR；后续可扩展多 PR。
+
+### 3.6 Policy 变更
+
+Policy JSON 的 hash 是 Policy version。每个 Mandate 记录版本。Policy 变更**不取消**在线工单，而是给受影响的 open ticket 写入 `policy` Input。恢复已结束工单时需要 Mandate 未撤销。
+
+## 4. 状态
+
+| Stage | 含义 | 控制台状态投影 |
 | --- | --- | --- |
-| Webhook 投递 | `webhook_deliveries(provider, delivery_id)` | 重复投递直接返回成功，不重复处理 |
-| 消息 | `messages(provider, provider_message_id)` 唯一 | 同一消息重复到达只记录一次 |
-| 接入判定 | `intake_events(message_id)` 唯一 | 每条消息只产生一个判定 |
-| 通知 | `outbox_events.dedupe_key` 唯一 | 同一业务事件只发一次 |
-| Run | `runs` 部分唯一索引（ticket_id, status in queued/running） | 同一工单只有一个活跃 Run |
+| `queued` | 等待 Turn | `triaged` |
+| `working` | Executor 正在执行 | `running` |
+| `plan_review` | 计划待审批 | `planned` |
+| `idle` | Executor 等待下一次触发 | `running` |
+| `review` | ready，PR 待评审 | `waiting_review` |
+| `blocked` / `failed` | 需要人/重试 | `failed` |
+| `answer` | 有 Attention 问题 | `running` |
+| `done` / `cancelled` | 结束 | 同名 |
 
-## 4. Mention Router
+Turn：`queued → running → succeeded / failed / cancelled / timeout`。
+同一 Session 同时只能有一个 running Turn；Main Session 的 eval 不受项目 worker 并发限制，Executor Turn 受 `maxConcurrentRuns` 限制。
 
-不做全量消息 Router，只做确定性判断（`decideIntake`）。优先级：
+## 5. Worker 与执行隔离
 
-1. **Bot 消息 / 空消息** → 忽略（防止自循环）。
-2. **没有绑定群** → 忽略；唯一例外：`@bot /bind <项目标识>`，要求发送者是该项目 Owner。
-3. **项目 archived** → 忽略。
-4. **发送者不是项目成员** → 忽略（不回复）。
-5. **命令** `/status /help /cancel /retry /approve /bind`：
-   - `/status`、`/help`：Viewer 及以上；
-   - `/cancel`、`/retry`、`/approve`、`/bind`：Maintainer 及以上；
-   - 未知命令提示帮助；无权限时明确回复（只对显式命令回复）。
-6. **项目 paused**：不建单、不追加工单；只允许只读命令与取消。
-7. **已有工单线程**：
-   - `allowThreadReplies=true`（默认）→ 追加到该工单；`waiting_review` / `done` 会重开并触发新的执行；
-   - `allowThreadReplies=false` 且未 @bot → 忽略；@bot 则新建工单。
-8. **@bot** → 新建工单。
-9. 其余 → 忽略（`not_mentioned`）。
+- Main Session Turn：scratch 目录，不克隆仓库；packet 包含 Policy、本批 Trigger、开放工单卡片和最近 transcript。
+- Executor Turn：`${WORKSPACES_DIR}/${projectId}/tickets/${ticketId}` 持久目录，首次 clone，后续复用；turn 结束不删除，工单结束后由保留策略清理。
+- 平台负责 Git/PR；Agent 不获得 GitHub token，模型进程环境不注入 installation token。
+- 心跳每 15 秒写 `session_turns.heartbeat_at`；API/Worker 的 reaper 按 `RUN_LEASE_SECONDS` 回收失联 Turn，Executor Turn 超时会把 Ticket 置 `failed` 并通知。
+- 停止工单会撤销 Mandate、取消 queued Turn、给 running Turn 写 `cancel_requested_at`；Worker 轮询后中止 Agent。
 
-每条判定写入 `intake_events(action, reason, command, ticket_id)`，不回复被忽略的消息。
+## 6. 协议
 
-> 已知取舍：绑定项目群中的非 @ 消息也会落一条 `messages` 记录用于审计和线程判定，但不会建单。数据保留期由部署控制（见 [DEPLOYMENT.md](DEPLOYMENT.md)）。
+Main Session：
 
-## 5. 数据模型
+```json
+{
+  "decisions": [
+    {
+      "triggerId": "uuid",
+      "action": "accept",
+      "reason": "explicit request",
+      "reply": "已接单",
+      "ticket": {
+        "title": "标题",
+        "body": "原始需求",
+        "scope": "允许的范围",
+        "strength": "explicit",
+        "planApproval": "required"
+      }
+    }
+  ]
+}
+```
 
-| 表 | 关键字段 | 说明 |
+Executor Session：
+
+```json
+{
+  "status": "progress | waiting | ready | blocked | failed | dropped",
+  "summary": "给人看的结果",
+  "plan": "计划（需要审批时）",
+  "attention": { "question": "需要人回答的问题" },
+  "branch": "可选，平台会校正",
+  "tokens": 0,
+  "cost": 0
+}
+```
+
+外部命令 Runtime 读 `{workspace}` `{promptFile}` `{inputFile}` `{resultFile}`，把 `{"output": <协议对象>, "tokens": ..., "cost": ...}` 写入 `result.json`。
+
+## 7. 安全
+
+- 所有业务查询按 `project_id`；跨项目 404。
+- Webhook 验签、事件 ID 幂等、限流；内部接口 Bearer token。
+- 群消息/PR 评论作为不可信输入进入 packet；授权由 Engine 在模型之外执行。
+- 只推 `agent/*`；不自动合并；建议 branch protection。
+- Worker 非 root、无 Docker socket、无宿主目录；模型进程不注入 GitHub token。
+- 审计覆盖 trigger、decision、ticket、turn、report、approval、PR、通知。
+
+## 8. 与 dsh-superagent 的差异
+
+| 原型 | 本服务 | 原因 |
 | --- | --- | --- |
-| `users` | id, name, avatar, email, is_admin | 平台用户 |
-| `identities` | user_id, provider, external_id | 飞书/企微/dev 身份，`(provider, external_id)` 唯一，不跨平台合并 |
-| `auth_sessions` | token_hash, expires_at | HttpOnly 会话，库中只存哈希 |
-| `projects` | name, slug, owner_id, status, policy_json, model_config | 项目；策略为 JSON |
-| `project_members` | project_id, user_id, role | 角色 owner/maintainer/member/viewer |
-| `repos` | project_id（唯一）, installation_id, owner, name, default_branch | 每项目一个仓库 |
-| `project_installations` | project_id, installation_id | GitHub App 安装与仓库选择之间的过渡记录 |
-| `channels` | project_id, provider, external_chat_id, status, config | 每个 provider+chat 唯一；每个项目最多一个 active 群；config 可存 `joinUrl`、`qrDataUrl`、`autoJoin`、企业微信群机器人 `webhookUrl` |
-| `invites` | token_hash, role, expires_at, max_uses, used_count | 只存 token 哈希，明文只在生成时返回 |
-| `tickets` | project_id, channel_id, thread_key, requester, title, body, status, plan, pr_url, branch | `(project, channel, thread_key)` 找活动工单 |
-| `messages` | provider, provider_message_id（唯一）, text, thread_key, is_bot | 绑定的项目群内的消息 |
-| `intake_events` | message_id（唯一）, action, reason, command, ticket_id | 路由判定记录 |
-| `runs` | ticket_id, kind(plan/execute), status, worker_id, tokens, cost, branch, pr_url | 需满足每工单一个活跃 Run |
-| `run_events` | run_id, type, message, payload | Agent 事件流（日志） |
-| `approvals` | ticket_id, kind(plan/merge), actor_id, decision, comment | 审批记录 |
-| `audit_logs` | project_id, actor, action, target, metadata | 只追加 |
-| `usage` | project_id, day, runs, tokens, cost | 唯一 `(project_id, day)` |
-| `outbox_events` | channel_id, kind, dedupe_key, payload, status, attempts | 事务性通知队列 |
-| `webhook_deliveries` | provider, delivery_id | Webhook 幂等 |
+| DSH 原生 Session + 工具调用 | `TurnRuntime` + JSON 协议；真实 DSH 由命令包装器接入 | 服务可替换运行时，便于多项目与测试 |
+| Main Session 有 14 个工具 | 本期 Main 只输出 decisions；命令仍是服务层确定性动作 | MVP 收窄，协议可扩展为工具调用 |
+| 推断候选 / bot 名单 / admission 表 | 本期只处理成员 @bot | 与 `DEVELOPMENT_PLAN.md` 的 @ 版一致 |
+| 自动 merge 规则 | 不自动合并 | 方案硬约束 |
+| 多 PR 跟踪 / 上下文订阅 / subagent | 未实现 | 后续里程碑 |
 
-**隔离约束**：所有业务表都有 `project_id`（或经由外键归属项目）；查询必须带项目条件。仓库、渠道、邀请、工单、运行、审批、用量、Outbox 均可按项目级联删除。
+## 9. 可观测性
 
-## 6. 状态机
-
-### 项目
-
-```text
-draft → active → paused → active
-  │        │         │
-  └────────┴─────────┴──► archived
-```
-
-- `draft`：缺少仓库或群；可配置，不接单。
-- `active`：接单、调度、运行。
-- `paused`：不建单、不调度；Maintainer 可暂停/恢复，运行中的 Run 不强制终止。
-- `archived`：只读；只有 Owner 可归档。
-
-### 工单
-
-```text
-new → triaged → planned → running → waiting_review → done
-  └──────┴─────────┴─────────┴────────────┴─► failed / cancelled
-```
-
-- 建单后立即入队 plan Run，工单从 `new` 进入 `triaged`；
-- plan 成功 → `planned`；`planApproval=auto` 时自动批准并进入 `running`；
-- execute 成功 → `waiting_review`；
-- PR 合并 → `done`；PR 关闭未合并 → `cancelled`；
-- 线程回复可把 `waiting_review` / `done` 重开（`done → running` 允许）；
-- 失败自动重试一次（可关），仍失败 → `failed`；
-- 只有 Maintainer+ 能批准、取消、重试。
-
-### Run
-
-```text
-queued → running → succeeded
-                  → failed
-                  → cancelled
-                  → timeout
-```
-
-- Worker 领取时原子更新 `queued → running` 并写 `started_at/heartbeat_at`；
-- Worker 每 15 秒心跳；API 的 reaper 每 30 秒扫描超过 `RUN_LEASE_SECONDS` 的 Run，置 `timeout` 并按策略重试/通知；
-- 取消请求写 `cancel_requested_at`，Worker 轮询后中止 Agent 进程；
-- 同一工单同时只允许一个 queued/running Run（数据库部分唯一索引兜底）。
-
-## 7. 编排、并发与配额
-
-- `claimNextRun` 按创建时间扫描 queued Run，校验项目 `active` 与该项目当前 running 数 `< policy.maxConcurrentRuns`，再用条件 UPDATE 抢锁，保证多 Worker 不重复领取。
-- Redis/BullMQ 模式：`queue.notify(runId)` 投递任务；Worker 用 `claimRunById` 做同样的策略校验。另有 15 秒孤儿轮询兜底，避免 Redis 丢任务后 Run 永远卡住。
-- 每日 Token 预算：入队前检查 `usage(project, today)`，超过 `dailyTokenBudget` 返回冲突。0 表示不限制。
-- 单 Run 超时：`min(policy.maxRunMinutes, AGENT_TIMEOUT_MINUTES)`，Runtime 进程被 SIGKILL。
-- 失败重试：每个 Run 的 `attempt` 最多 2；重试沿用同一 kind（plan/execute）。
-- 计划审批：`planApproval=required` 时只生成计划；Maintainer 通过控制台或 `/approve` 批准后创建 execute Run。
-
-## 8. Worker 执行流水线
-
-`src/worker/pipeline.ts`：
-
-1. 加载工单、项目、仓库；项目绑定仓库是硬前提。
-2. 建工作目录 `${WORKSPACES_DIR}/${projectId}/${runId}`。
-3. 取 GitHub installation token（短期），凭据通过 `GIT_CONFIG_*` 环境变量传给 git，不写入磁盘或 URL。
-4. `git clone --depth 1 --branch <default>`。
-5. 构造 prompt：平台规则 + 工单正文 + 计划 + 线程最近 20 条讨论。群消息被视为不可信数据。
-6. 运行 `AgentRuntime`，事件逐条写入 `run_events`，定时心跳。
-7. plan：把结果写回工单 `plan` 字段，按策略等待审批或自动执行。
-8. execute：
-   - 创建 `agent/<ticket>-<time>` 分支；
-   - 若工作区无改动 → 失败并说明原因；
-   - 提交、推送；分支前缀强制以 `agent/` 开头；
-   - 用 GitHub App 创建 PR，正文包含需求、计划、摘要、diff stat；
-   - 工单 → `waiting_review`，通知群。
-9. 清理工作目录（`KEEP_WORKSPACES=true` 时保留，便于排障）。
-
-Agent 不负责 push/PR：它只改工作区并写 `.superagent/result.json`。这保证分支与 PR 策略由平台执行，而不是模型。
-
-## 9. 通知 Outbox
-
-- 业务状态变更与通知插入在同一个数据库事务/调用链中；`outbox_events` 落库即视为“已记账”。
-- `dedupe_key` 唯一，保证重试/重放不会重复发消息。
-- API 进程每 `OUTBOX_INTERVAL_MS` 取一批 pending，发送成功后标记 `sent`；失败按 `2^n` 秒退避，超过 `OUTBOX_MAX_ATTEMPTS` 标记 `failed`。
-- 没有配置对应 IM 凭据时（开发/演示），发送器缺失，消息被标记为 `sent` 且 `lastError=simulated`，并打印到日志，便于本地验证。
-- 发送 Feishu 时优先使用 reply endpoint，让回执留在原消息线程。
-
-## 10. GitHub 集成
-
-- GitHub App JWT（RS256）→ installation access token，缓存到过期前 1 分钟。
-- 仓库绑定支持两条路径：App 安装回调 + 仓库选择，或手动填写。
-- Webhook 校验 `X-Hub-Signature-256`，按 `X-GitHub-Delivery` 去重。
-- 处理事件：
-  - `pull_request closed+merged` → 工单 `done`，发完成通知；
-  - `pull_request closed` 未合并 → 工单 `cancelled`；
-  - `issue_comment` / `pull_request_review_comment` → 记录消息；若 PR 对应工单处于 `waiting_review`/`done`，创建新的执行 Run（评审迭代）；
-  - `check_suite` / `check_run completed` → 把 CI 结论通知到群；
-  - 其他事件忽略。
-- PR 匹配顺序：`tickets.pr_url` → 仓库 + `tickets.branch`（head ref）。
-
-## 11. IM 适配差异
-
-| 能力 | 飞书 | 企业微信 |
-| --- | --- | --- |
-| 回调验签 | `X-Lark-Signature` SHA256 | `msg_signature` SHA1 + AES-256-CBC |
-| 解密 | AES-256-CBC，key=SHA256(EncryptKey) | AES-256-CBC + 32 字节 padding |
-| @bot 判定 | `mentions[].id.open_id == bot_open_id` | 文本中出现 `@<WECOM_BOT_NAME>` |
-| 线程 | 原生 thread/root；线程回复可续跑工单 | 无原生线程；每条消息独立，`allowThreadReplies` 实际不生效 |
-| 发消息 | `im/v1/messages` 或 reply 接口 | 群机器人 Webhook，或 `appchat/send` |
-| 建群/拉人 | 不自动建群；接受项目邀请后尝试自动拉群（需应用是群管理员且有成员权限），失败或未授权时展示群二维码 / 邀请链接 | 不自动建群；应用自建群（appchat）可自动拉人，已有群不支持 API 加人，展示群二维码 / 邀请链接；可配置群机器人 Webhook 发送 |
-| OAuth | 飞书网页应用授权 | 企业微信 OAuth（snsapi_base） |
-
-企业微信适配器已完成协议与发送，但因平台能力限制，MVP 建议以飞书为主；后续接入「智能机器人」回调可补齐 @ 与线程语义。
-
-## 12. 安全与隔离
-
-- **租户隔离**：所有服务层查询携带 `project_id`；跨项目访问返回 404；集成测试覆盖项目 A/B 隔离。
-- **会话**：HttpOnly + SameSite=Lax Cookie；数据库只存 SHA-256；写接口校验 CSRF header 或同源 Origin。
-- **Webhook**：验签、时间戳窗口（飞书）、事件 ID 幂等、限流（每 IP 每分钟）。
-- **内部接口**：`Authorization: Bearer <INTERNAL_TOKEN>`，常量时间比较。
-- **执行隔离**：每次 Run 独立目录；容器部署时 Worker 以非 root 运行、无 Docker socket、无宿主目录；工作目录随 Run 删除。
-- **密钥**：GitHub token 只在进程环境与 Git 配置 env 中短暂存在；日志脱敏；IM/模型密钥只从环境变量读取。
-- **提示词注入**：消息/评论按不可信输入拼进 prompt，平台规则显式声明优先级；授权、成员校验、工具白名单都在模型之外。
-- **仓库保护**：强制 `agent/*` 分支前缀；不自动合并；建议开启 branch protection。
-- **审计**：关键动作全部写 `audit_logs`，不记录密钥；`GET /v1/projects/:id/audit` 仅 Maintainer+。
-
-## 13. 可观测性
-
-- 结构化日志（pino），请求日志 + `runId/projectId/ticketId` 绑定。
-- `/healthz` 存活、`/readyz` 数据库探活、`/metrics` Prometheus 文本（Run/工单状态计数、Outbox pending）。
-- 每个 Run 都有事件流（`run_events`）与审计记录，可追溯 Agent 输出。
-- 部署建议见 [DEPLOYMENT.md](DEPLOYMENT.md)。
-
-## 14. 关键决策与偏差
-
-| 决策 | 原因 |
-| --- | --- |
-| 默认 DB 队列表，Redis/BullMQ 可选 | 单机 Compose 少一个依赖也能跑；生产可切 Redis；两者共用 `QueuePort` |
-| 本地/测试使用 PGlite | 无需 Docker 即可运行迁移与测试；生产仍是 Postgres 16 + Drizzle |
-| 演示使用 Mock GitHub + FakeRuntime | 没有真实凭据也能验证端到端链路；真实模式接口相同 |
-| Agent 不 push/PR | 分支策略、PR 内容、审计由平台控制，降低模型越权风险 |
-| 计划审批可配置 | 小改动自动执行，高风险改动强制审批 |
-| 企业微信先做 Adapter | 方案要求默认飞书优先，企微留接口不变 |
-| 非 @ 消息也落库 | 线程判定与审计需要；只限绑定项目群，且不建单 |
-| 不自动建群；飞书与企微自建群可选自动拉人 | 平台建群能力不一致，按方案退化为“绑定已有群”；入群优先自动拉人，失败回落到群二维码/链接 |
+结构化日志带 `turnId/projectId/ticketId`；`/metrics` 用 Executor Turn 状态映射 `superagent_runs_total`；`turn_events` 保存 Agent 事件；`audit_logs` 保存业务动作。每个 Ticket 可追溯 Trigger → Eval/Decision → Mandate → Turn/Report → PR → Approval。

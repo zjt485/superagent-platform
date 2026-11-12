@@ -52,7 +52,7 @@ export const notifications = {
       deps,
       ticket,
       'plan',
-      `plan:${ticket.id}:${ticket.lastRunId ?? 'x'}`,
+      `plan:${ticket.id}:${ticket.lastReportId ?? 'x'}`,
       approvalRequired
         ? `🧭 计划已生成 ${ticketLabel(ticket)}\n${plan}\n\n需要 Maintainer 审批：在群里回复 /approve ${shortId(ticket.id)}，或在控制台批准。`
         : `🧭 计划已生成并开始执行 ${ticketLabel(ticket)}\n${plan}`,
@@ -63,7 +63,7 @@ export const notifications = {
       deps,
       ticket,
       'approval',
-      `approval:${ticket.id}:${ticket.lastRunId ?? 'x'}`,
+      `approval:${ticket.id}:${ticket.lastReportId ?? 'x'}`,
       `⏳ 等待计划审批 ${ticketLabel(ticket)}\n${plan}\n\nMaintainer 可回复 /approve ${shortId(ticket.id)}。`,
     ),
 
@@ -75,7 +75,7 @@ export const notifications = {
       deps,
       ticket,
       'pr',
-      `pr:${ticket.id}:${ticket.lastRunId ?? prUrl}`,
+      `pr:${ticket.id}:${ticket.lastReportId ?? prUrl}`,
       `🚀 PR 已创建 ${ticketLabel(ticket)}\n${prUrl}\n${summary}\n等待人工评审，评审意见可直接在该线程回复。`,
     ),
 
@@ -87,7 +87,7 @@ export const notifications = {
       deps,
       ticket,
       'failed',
-      `failed:${ticket.id}:${ticket.lastRunId ?? 'x'}`,
+      `failed:${ticket.id}:${ticket.lastReportId ?? 'x'}`,
       `⚠️ 执行失败 ${ticketLabel(ticket)}\n原因：${reason}\nMaintainer 可回复 /retry ${shortId(ticket.id)} 重试。`,
     ),
 
@@ -111,7 +111,7 @@ export const notifications = {
       deps,
       ticket,
       'completed',
-      `completed-nopr:${ticket.id}:${ticket.lastRunId ?? 'x'}`,
+      `completed-nopr:${ticket.id}:${ticket.lastReportId ?? 'x'}`,
       `✅ 执行完成但未创建 PR ${ticketLabel(ticket)}\n${summary}`,
     ),
 

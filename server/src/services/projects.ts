@@ -7,7 +7,7 @@ import {
   projectMembers,
   projects,
   repos,
-  runs,
+  sessionTurns,
   tickets,
   users,
   type ProjectRow,
@@ -127,10 +127,10 @@ export async function listProjects(deps: Deps, user: { id: string; isAdmin: bool
     .where(and(inArray(tickets.projectId, ids), inArray(tickets.status, [...ACTIVE_TICKET_STATUSES])))
     .groupBy(tickets.projectId)
   const runCounts = await deps.db
-    .select({ projectId: runs.projectId, value: count() })
-    .from(runs)
-    .where(and(inArray(runs.projectId, ids), eq(runs.status, 'running')))
-    .groupBy(runs.projectId)
+    .select({ projectId: sessionTurns.projectId, value: count() })
+    .from(sessionTurns)
+    .where(and(inArray(sessionTurns.projectId, ids), eq(sessionTurns.status, 'running'), eq(sessionTurns.kind, 'execute')))
+    .groupBy(sessionTurns.projectId)
   const memberCounts = await deps.db
     .select({ projectId: projectMembers.projectId, value: count() })
     .from(projectMembers)
@@ -261,16 +261,16 @@ export async function updateProject(
   }
 
   if (input.status === 'archived' && project.status !== 'archived') {
-    // Archiving makes the project read-only: drop queued work and ask running
+    // Archiving makes the project read-only: drop queued Turns and ask running
     // workers to stop, so nothing executes after the decision.
     await deps.db
-      .update(runs)
+      .update(sessionTurns)
       .set({ status: 'cancelled', endedAt: deps.now(), error: 'project archived' })
-      .where(and(eq(runs.projectId, projectId), eq(runs.status, 'queued')))
+      .where(and(eq(sessionTurns.projectId, projectId), eq(sessionTurns.status, 'queued')))
     await deps.db
-      .update(runs)
+      .update(sessionTurns)
       .set({ cancelRequestedAt: deps.now() })
-      .where(and(eq(runs.projectId, projectId), eq(runs.status, 'running')))
+      .where(and(eq(sessionTurns.projectId, projectId), eq(sessionTurns.status, 'running')))
   }
 
   await deps.db.update(projects).set(patch).where(eq(projects.id, projectId))

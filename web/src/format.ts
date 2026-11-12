@@ -12,6 +12,12 @@ export const STATUS_LABELS: Record<string, string> = {
   failed: '失败',
   cancelled: '已取消',
   queued: '排队中',
+  working: '执行中',
+  plan_review: '待审批计划',
+  idle: '等待触发',
+  review: '待评审',
+  blocked: '受阻',
+  answer: '等待回答',
   succeeded: '成功',
   timeout: '超时',
   pending: '待发送',
@@ -41,10 +47,10 @@ export type Tone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'bran
 
 export function statusTone(status: string): Tone {
   if (['active', 'succeeded', 'done', 'sent'].includes(status)) return 'success'
-  if (['running', 'triaged', 'ticket_created'].includes(status)) return 'info'
-  if (['planned', 'waiting_review', 'paused', 'queued', 'pending', 'warning'].includes(status)) return 'warning'
+  if (['running', 'triaged', 'ticket_created', 'working'].includes(status)) return 'info'
+  if (['planned', 'waiting_review', 'paused', 'queued', 'pending', 'warning', 'plan_review', 'review', 'answer', 'blocked'].includes(status)) return 'warning'
   if (['failed', 'timeout', 'cancelled'].includes(status)) return 'danger'
-  if (['new', 'draft'].includes(status)) return 'neutral'
+  if (['new', 'draft', 'idle'].includes(status)) return 'neutral'
   return 'neutral'
 }
 

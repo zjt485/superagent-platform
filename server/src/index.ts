@@ -11,12 +11,13 @@ import { buildApp } from './app/build.js'
 import type { AppContext } from './app/context.js'
 import { depsOf } from './services/deps.js'
 import { flushOutbox } from './services/outbox.js'
-import { reapStaleRuns } from './services/orchestrator.js'
 import { cleanupExpiredSessions } from './services/auth.js'
-import { createRuntime } from './runtime/index.js'
+import { reapStaleTurns } from './dual/engine.js'
+import { startInlineWorker } from './dual/inline.js'
+import type { DualWorkerContext } from './dual/worker.js'
+import { createTurnRuntime } from './dual/runtime.js'
 import { RealGitOps } from './worker/git.js'
 import { FakeGitOps } from './worker/fake-git.js'
-import { startInlineWorker } from './worker/inline.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -48,9 +49,9 @@ const inlineWorker = config.INLINE_WORKER
         ports: {
           github,
           git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
-          runtime: createRuntime(config, log),
+          runtime: createTurnRuntime(config, log),
         },
-      },
+      } satisfies DualWorkerContext,
       `inline-${hostname()}-${randomUUID().slice(0, 8)}`,
     )
   : null
@@ -62,7 +63,7 @@ timers.push(
   }, config.OUTBOX_INTERVAL_MS),
 )
 timers.push(setInterval(() => {
-  void reapStaleRuns(ctx).catch((error) => log.warn({ err: error }, 'run reaper failed'))
+  void reapStaleTurns({ ...ctx, queue }).catch((error) => log.warn({ err: error }, 'turn reaper failed'))
 }, 30_000))
 timers.push(setInterval(() => {
   void cleanupExpiredSessions(ctx).catch((error) => log.warn({ err: error }, 'session cleanup failed'))

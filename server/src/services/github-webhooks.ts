@@ -1,17 +1,16 @@
 import { and, desc, eq } from 'drizzle-orm'
-import type { OrchestratorContext } from './orchestrator.js'
-import { markMergedFromWebhook, resumeTicket } from './orchestrator.js'
+import type { DualContext } from '../dual/engine.js'
+import { createInput, markClosed, markMerged } from '../dual/engine.js'
 import { audit } from './audit.js'
 import { newId } from '../domain/ids.js'
-import { messages, repos, tickets, type TicketRow } from '../db/schema.js'
+import { messages, projects, repos, tickets, type ProjectRow, type TicketRow } from '../db/schema.js'
 import { notifications } from './notifications.js'
-import { markTicketCancelled } from './tickets.js'
 import { isUniqueViolation } from '../db/errors.js'
 
 type Json = Record<string, unknown>
 const asRecord = (value: unknown): Json => (value && typeof value === 'object' ? (value as Json) : {})
 
-async function findTicket(ctx: OrchestratorContext, payload: Json, pr: Json): Promise<TicketRow | null> {
+async function findTicket(ctx: DualContext, payload: Json, pr: Json): Promise<TicketRow | null> {
   const repoFullName = typeof asRecord(payload.repository).full_name === 'string' ? (asRecord(payload.repository).full_name as string) : ''
   const prUrl = typeof pr.html_url === 'string' ? pr.html_url : ''
   const head = typeof asRecord(pr.head).ref === 'string' ? (asRecord(pr.head).ref as string) : ''
@@ -34,8 +33,13 @@ async function findTicket(ctx: OrchestratorContext, payload: Json, pr: Json): Pr
   return null
 }
 
+async function projectOf(ctx: DualContext, projectId: string): Promise<ProjectRow | null> {
+  const [project] = await ctx.db.select().from(projects).where(eq(projects.id, projectId))
+  return project ?? null
+}
+
 async function recordComment(
-  ctx: OrchestratorContext,
+  ctx: DualContext,
   ticket: TicketRow,
   input: { id: string; body: string; login: string; url?: string },
 ): Promise<void> {
@@ -57,13 +61,19 @@ async function recordComment(
       createdAt: ctx.now(),
     })
   } catch (error) {
-    if (!isUniqueViolation(error)) throw error
+    // Already recorded: do not deliver the same comment twice.
+    if (isUniqueViolation(error)) return
+    throw error
+  }
+  const project = await projectOf(ctx, ticket.projectId)
+  if (project) {
+    await createInput(ctx, project, ticket, null, `PR 评论（${input.login}）：${input.body}`, true, 'person')
   }
 }
 
-/** Handles the GitHub events this MVP consumes (FR-09, §4.5). */
+/** Handles the GitHub events the service consumes (FR-09, §4.5). */
 export async function handleGithubWebhook(
-  ctx: OrchestratorContext,
+  ctx: DualContext,
   event: string,
   payload: Json,
   deliveryId: string,
@@ -78,7 +88,7 @@ export async function handleGithubWebhook(
     }
     if (action === 'closed') {
       if (pr.merged === true) {
-        await markMergedFromWebhook(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
+        await markMerged(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
         await audit(ctx, {
           projectId: ticket.projectId,
           action: 'github.pr_merged',
@@ -87,9 +97,9 @@ export async function handleGithubWebhook(
         })
         return { handled: 'merged' }
       }
-      if (ticket.status !== 'done' && ticket.status !== 'cancelled') {
-        await markTicketCancelled(ctx, ticket, { id: '', name: 'GitHub' })
-        await notifications.cancelled(ctx, ticket, 'GitHub')
+      if (ticket.stage !== 'done' && ticket.stage !== 'cancelled') {
+        await markClosed(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
+        await audit(ctx, { projectId: ticket.projectId, action: 'github.pr_closed', target: `ticket:${ticket.id}` })
       }
       return { handled: 'closed' }
     }
@@ -124,14 +134,13 @@ export async function handleGithubWebhook(
       login: String(asRecord(comment.user).login ?? 'github-user'),
       ...(typeof comment.html_url === 'string' ? { url: comment.html_url } : {}),
     })
-    const resumed = await resumeTicket(ctx, ticket.id, String(comment.body ?? ''))
     await audit(ctx, {
       projectId: ticket.projectId,
       action: 'github.comment',
       target: `ticket:${ticket.id}`,
-      metadata: { commentId, resumed: Boolean(resumed) },
+      metadata: { commentId },
     })
-    return { handled: resumed ? 'comment-resumed' : 'comment-recorded' }
+    return { handled: 'comment-delivered' }
   }
 
   if (event === 'check_suite' || event === 'check_run') {
@@ -139,14 +148,11 @@ export async function handleGithubWebhook(
     const prs = Array.isArray(suite.pull_requests) ? suite.pull_requests : []
     const pr = asRecord(prs[0])
     if (!pr || action !== 'completed') return { handled: 'ignored' }
-    // Check payloads carry API URLs, while tickets store the HTML PR URL.
     const repository = asRecord(payload.repository)
     const repoFullName = typeof repository.full_name === 'string' ? repository.full_name : ''
     const number = pr.number
     const prHtmlUrl =
-      typeof repoFullName === 'string' && typeof number === 'number' && repoFullName
-        ? `${ctx.config.GITHUB_WEB_BASE}/${repoFullName}/pull/${number}`
-        : ''
+      repoFullName && typeof number === 'number' ? `${ctx.config.GITHUB_WEB_BASE}/${repoFullName}/pull/${number}` : ''
     const ticket = await findTicket(ctx, payload, { html_url: prHtmlUrl, head: pr.head })
     if (!ticket) return { handled: 'unmatched' }
     const conclusion = String(suite.conclusion ?? suite.status ?? 'unknown')
