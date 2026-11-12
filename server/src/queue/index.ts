@@ -24,6 +24,7 @@ export interface RedisQueueHandle {
 export function createRedisQueue(config: Config, log: Logger): RedisQueueHandle {
   if (!config.REDIS_URL) throw new Error('REDIS_URL is required for the redis queue driver')
   const connection = new Redis(config.REDIS_URL, { maxRetriesPerRequest: null })
+  connection.on('error', (error) => log.warn({ err: error }, 'redis queue connection error'))
   // BullMQ requires this option on user-provided ioredis connections.
   const queue = new Queue(RUN_QUEUE_NAME, { connection })
   return {

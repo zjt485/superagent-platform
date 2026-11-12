@@ -1,6 +1,7 @@
 import { hostname } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { Worker } from 'bullmq'
+import { Redis } from 'ioredis'
 import { githubMode, loadConfig } from '../config.js'
 import { openDatabase } from '../db/client.js'
 import { createLogger } from '../logger.js'
@@ -66,15 +67,20 @@ async function pollLoop(index: number): Promise<void> {
 }
 
 let bullWorker: Worker | null = null
-if (redis) {
+// BullMQ wants a dedicated blocking connection for the Worker; the Queue keeps
+// its own connection. Sharing one ioredis instance between both can stall jobs.
+const workerConnection = redis ? new Redis(config.REDIS_URL as string, { maxRetriesPerRequest: null }) : null
+workerConnection?.on('error', (error) => log.warn({ err: error }, 'redis worker connection error'))
+if (redis && workerConnection) {
   bullWorker = new Worker(
     RUN_QUEUE_NAME,
     async (job) => {
       await track(execute(String(job.data.runId)))
     },
-    { connection: redis.connection, concurrency: config.WORKER_CONCURRENCY },
+    { connection: workerConnection, concurrency: config.WORKER_CONCURRENCY },
   )
   bullWorker.on('failed', (job, error) => log.error({ err: error, jobId: job?.id }, 'bullmq job failed'))
+  bullWorker.on('error', (error) => log.warn({ err: error }, 'bullmq worker error'))
   // Orphan recovery: a run row may be queued without a live Redis job.
   setInterval(() => {
     if (stopping) return
@@ -103,8 +109,9 @@ async function shutdown(signal: string): Promise<void> {
   clearInterval(reaper)
   if (bullWorker) await bullWorker.close().catch(() => {})
   await Promise.allSettled([...inflight])
-  await queue.close().catch(() => {})
-  await redis?.close().catch(() => {})
+  if (redis) await redis.close().catch(() => {})
+  else await queue.close().catch(() => {})
+  await workerConnection?.quit().catch(() => {})
   await handle.close().catch(() => {})
   process.exit(0)
 }

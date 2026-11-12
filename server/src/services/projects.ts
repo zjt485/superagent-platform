@@ -260,6 +260,19 @@ export async function updateProject(
     if (target === 'archived') patch.archivedAt = deps.now()
   }
 
+  if (input.status === 'archived' && project.status !== 'archived') {
+    // Archiving makes the project read-only: drop queued work and ask running
+    // workers to stop, so nothing executes after the decision.
+    await deps.db
+      .update(runs)
+      .set({ status: 'cancelled', endedAt: deps.now(), error: 'project archived' })
+      .where(and(eq(runs.projectId, projectId), eq(runs.status, 'queued')))
+    await deps.db
+      .update(runs)
+      .set({ cancelRequestedAt: deps.now() })
+      .where(and(eq(runs.projectId, projectId), eq(runs.status, 'running')))
+  }
+
   await deps.db.update(projects).set(patch).where(eq(projects.id, projectId))
   await audit(deps, {
     projectId,

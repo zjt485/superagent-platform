@@ -52,8 +52,8 @@ async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'api shutting down')
   for (const timer of timers) clearInterval(timer)
   await app.close().catch(() => {})
-  await queue.close().catch(() => {})
-  await redis?.close().catch(() => {})
+  if (redis) await redis.close().catch(() => {})
+  else await queue.close().catch(() => {})
   await handle.close().catch(() => {})
   process.exit(0)
 }
