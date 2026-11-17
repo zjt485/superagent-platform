@@ -8,6 +8,7 @@ import { shortId } from '../domain/ids.js'
 import { ticketTitle } from '../domain/message.js'
 import type { ExecutorReportOutput, ExecutorTurnPacket, MainDecisionOutput, MainTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from './types.js'
 import { TurnCancelledError } from './types.js'
+import { OpenAiTurnRuntime } from './openai.js'
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -224,6 +225,20 @@ export function createTurnRuntime(config: Config, log: Logger): TurnRuntime {
   if (config.AGENT_RUNTIME === 'command') {
     if (!config.AGENT_COMMAND) throw new Error('AGENT_COMMAND is required when AGENT_RUNTIME=command')
     return new ProcessTurnRuntime(config.AGENT_COMMAND)
+  }
+  if (config.AGENT_RUNTIME === 'openai') {
+    if (!config.LLM_API_KEY) throw new Error('LLM_API_KEY is required when AGENT_RUNTIME=openai')
+    log.info({ baseUrl: config.LLM_BASE_URL, model: config.LLM_MODEL }, 'openai-compatible runtime enabled')
+    return new OpenAiTurnRuntime({
+      baseUrl: config.LLM_BASE_URL,
+      apiKey: config.LLM_API_KEY,
+      model: config.LLM_MODEL,
+      temperature: config.LLM_TEMPERATURE,
+      maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS,
+      maxSteps: config.LLM_MAX_STEPS,
+      inputCostPer1M: config.LLM_INPUT_COST_PER_1M,
+      outputCostPer1M: config.LLM_OUTPUT_COST_PER_1M,
+    })
   }
   if (config.NODE_ENV === 'production') log.warn('fake dual-agent runtime enabled in production')
   return new FakeTurnRuntime()

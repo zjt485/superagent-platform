@@ -12,7 +12,7 @@
 - **可运行**：控制面 API、Web 控制台、Worker、飞书 / 企业微信适配、GitHub App 适配、PGlite/Postgres、DB/Redis 队列、Outbox 通知、Docker Compose 部署文件与文档均已实现。
 - **核心是双 Agent**：每个项目一个持久 **Main Session**（Trigger → Eval/Decision → Ticket/Mandate），每张工单一个持久 **Executor Session**（Assignment → Report → PR）。旧的 plan/execute Run 已移除。
 - **开箱即用的是演示链路**：`pnpm demo` 使用 Mock GitHub + Fake Agent Runtime，在没有外部凭据的机器上跑通「@bot → Main Session → Executor Session → PR → 合并关闭」。
-- **接真实环境需要配置**：飞书应用、GitHub App、Postgres/Redis，以及实现了 DSH headless 调用约定的 `AGENT_COMMAND`（见 [部署文档](docs/DEPLOYMENT.md)）。
+- **接真实环境需要配置**：飞书应用、GitHub App、Postgres/Redis，以及 Agent Runtime。支持外部 `AGENT_COMMAND`（DSH headless），或 `AGENT_RUNTIME=openai` 直连 OpenAI-compatible LLM（见 [部署文档](docs/DEPLOYMENT.md)）。
 - 已知限制与和原方案的差异见 [STATUS.md](docs/STATUS.md)。
 
 ## 快速开始（无需外部凭据）
@@ -100,7 +100,7 @@ Web 控制台 ───── HTTPS ────► Console/API ───┼─�
 
 - **控制面不执行 shell**：API 只做鉴权、状态与调度。
 - **每张工单独立目录**：Executor Session 在 `${project}/tickets/${ticket}` 持久工作，不跨项目复用。
-- **DSH 只做 Agent Runtime**：通过 `TurnRuntime` 接入；演示环境使用 `FakeTurnRuntime`。
+- **模型调用可替换**：通过 `TurnRuntime` 接入；支持 Fake、外部命令（DSH）和 OpenAI-compatible 直连三种运行时。
 - **GitHub 用 App 短期 token**：按任务下发 installation token，任务结束失效。
 - **IM Adapter 统一接口**：`verifyAndParse` / `send`，飞书与企业微信各自封装协议差异。
 

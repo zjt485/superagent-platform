@@ -36,7 +36,7 @@
 | Dual Engine | `src/dual/engine.ts` | Trigger 入库、Eval、Decision、Ticket/Mandate、Input、停/重试、PR 事件 |
 | Sessions | `src/dual/sessions.ts` | Main/Executor Session、Turn 队列、Transcript、心跳、取消 |
 | Prompts | `src/dual/prompts.ts` | 两个角色各自的系统提示词与 JSON 协议 |
-| Runtime | `src/dual/runtime.ts` | Fake / 外部命令 Agent Runtime，写入 `result.json` |
+| Runtime | `src/dual/runtime.ts`、`src/dual/openai.ts` | Fake / 外部命令 / OpenAI-compatible 直连 Runtime |
 | Worker | `src/dual/worker.ts` | 执行 Turn、工作区、Git/PR、Report |
 | Views | `src/dual/views.ts` | 控制台 DTO、Main Session 视图、Turn 映射 |
 | Service shell | `src/services/projects.ts`、`auth.ts`、`invites.ts`、`outbox.ts`、`audit.ts` | 项目、成员、邀请、通知、审计 |
@@ -139,6 +139,7 @@ Turn：`queued → running → succeeded / failed / cancelled / timeout`。
 
 - Main Session Turn：scratch 目录，不克隆仓库；packet 包含 Policy、本批 Trigger、开放工单卡片和最近 transcript。
 - Executor Turn：`${WORKSPACES_DIR}/${projectId}/tickets/${ticketId}` 持久目录，首次 clone，后续复用；turn 结束不删除，工单结束后由保留策略清理。
+- 直连 `openai` Runtime 的 Executor 通过 `read_file/write_file/list_files/run_command` 工具操作工作区；`run_command` 使用隔离 HOME/TMP，但仍应放在无宿主挂载的 Worker 容器里。
 - 平台负责 Git/PR；Agent 不获得 GitHub token，模型进程环境不注入 installation token。
 - 心跳每 15 秒写 `session_turns.heartbeat_at`；API/Worker 的 reaper 按 `RUN_LEASE_SECONDS` 回收失联 Turn，Executor Turn 超时会把 Ticket 置 `failed` 并通知。
 - 停止工单会撤销 Mandate、取消 queued Turn、给 running Turn 写 `cancel_requested_at`；Worker 轮询后中止 Agent。

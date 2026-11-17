@@ -157,6 +157,39 @@ docker run --rm --env-file .env superagent-platform:0.1.0 node dist/worker-main.
 
 ## 6. Agent Runtime 接入（双 Session）
 
+平台支持三种 `AGENT_RUNTIME`：
+
+| 值 | 说明 |
+| --- | --- |
+| `fake` | 演示/测试用，不调用模型，不产生真实代码 |
+| `command` | 外部 Agent 命令（DSH headless / 包装器），最灵活、支持完整工具 |
+| `openai` | 平台直连 OpenAI-compatible `/chat/completions`，Executor 带工作区工具 |
+
+### 6.0 直连 OpenAI-compatible（`AGENT_RUNTIME=openai`）
+
+```env
+AGENT_RUNTIME=openai
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_API_KEY=sk-...
+LLM_MODEL=deepseek-chat
+LLM_TEMPERATURE=0.2
+LLM_MAX_OUTPUT_TOKENS=4096
+LLM_MAX_STEPS=20
+LLM_INPUT_COST_PER_1M=0
+LLM_OUTPUT_COST_PER_1M=0
+```
+
+- Base URL 需要包含 provider 的版本前缀（OpenAI 为 `/v1`，DeepSeek 用 `https://api.deepseek.com/v1`）；平台会追加 `/chat/completions`。
+- Main Session 单次调用返回 `decisions` JSON。
+- Executor Session 使用 tool loop：
+  - `read_file` / `write_file` / `list_files`；
+  - `run_command`（cwd=workspace，默认 120 秒，禁止 `git push` / `gh pr` / 修改 remote）。
+- 模型不能写 `.git` / `.superagent`；不能通过文件工具越出 workspace。
+- **安全边界**：`run_command` 是真实 shell。生产必须让 Worker 运行在无宿主挂载、无 Docker socket、无敏感环境变量的隔离容器/Job 中；不要把平台 `.env`、SSH key 或云凭据暴露给 Worker。
+- 直连模型没有 DSH 的完整工具/会话能力；需要复杂代码库操作时优先选 `command` + DSH。
+
+### 6.1 外部命令 Runtime（`AGENT_RUNTIME=command`）
+
 平台不内置 DSH CLI 参数，而是通过 `AGENT_COMMAND` 适配。每次模型调用是一个 **Turn**；Main Session 和 Executor Session 共用同一个命令，通过环境变量与输入文件区分角色。
 
 命令可用占位符：

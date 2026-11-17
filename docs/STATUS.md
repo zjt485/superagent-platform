@@ -2,7 +2,7 @@
 
 核心已从“确定性路由 + plan/execute Runs”重写为 **Main Session / Executor Session 双 Agent**。旧的 `runs` / `run_events` 表和代码已删除（迁移 0004）。服务壳（项目、成员、邀请、IM、GitHub、控制台、Outbox、审计）复用。
 
-测试：`pnpm test`，当前 **54 tests / 11 files**。
+测试：`pnpm test`，当前 **59 tests / 12 files**。
 
 ## 1. 功能需求
 
@@ -15,7 +15,7 @@
 | FR-05 | IM 群绑定、群内 `/bind`、扫码入群 | ✅ | `bindChannel`、dual intake、`services/group-join.ts`；**企业微信应用群**在项目详情页展示签名二维码，扫码 OAuth 后 `appchat/update` 自动入群；飞书同理；已有群二维码兜底 |
 | FR-06 | @bot 接单、命令、线程回复 | ✅ | 飞书走回调；企业微信走智能机器人长连接（`im/wecom-bot.ts`，自建 appchat 不能收群消息）；只处理成员 @bot；线程 Input 绕过 Eval |
 | FR-07 | 工单生命周期 | ✅ | `tickets.stage`：queued/working/plan_review/idle/review/blocked/failed/answer/done/cancelled；`dual-core.test.ts`、`service.test.ts` |
-| FR-08 | 队列、Worker、超时、重试、取消、日志 | ✅ | `session_turns`、`claimNextTurn`、`executeTurn`、`reapStaleTurns`、`turn_events`；测试覆盖失败重试与取消 |
+| FR-08 | 队列、Worker、超时、重试、取消、日志 | ✅ | `session_turns`、`claimNextTurn`、`executeTurn`、`reapStaleTurns`、`turn_events`；测试覆盖失败重试与取消；Runtime 支持 fake/command/openai |
 | FR-09 | 分支、commit、PR、评论、CI | ✅（真实 API 待联调） | `dual/worker.ts` 交付 PR；`services/github-webhooks.ts`；Mock PR + merge/comment 路径 |
 | FR-10 | 计划审批、人工合并 | ✅ 基本完成 | 计划是 Executor Turn 的门：`plan_review` → approval Input → 下一 Turn；不自动合并 |
 | FR-11 | 接单/进度/PR/需人工/完成通知 | ✅ | `services/notifications.ts`、Outbox；服务测试校验 PR/done 通知 |
@@ -63,6 +63,7 @@
 | `tests/group-join.test.ts` | 项目群二维码/链接；飞书/企微自建群自动拉群；默认关闭与失败回落 |
 | `tests/wecom-join.test.ts` | 创建 appchat 应用群、项目详情页签名二维码、扫码 OAuth 后自动入群、API 路由、篡改/缺凭据处理 |
 | `tests/wecom-bot.test.ts` | 企业微信智能机器人帧归一化：群 @、命令、混排、单聊、坏帧 |
+| `tests/openai-runtime.test.ts` | OpenAI-compatible Runtime：Main 决策 JSON、Executor 工具循环、路径逃逸拒绝、用量统计 |
 | `tests/feishu.test.ts` | 飞书加解密、验签、URL 验证、发送、OAuth |
 | `tests/intake.test.ts` | 命令解析与 Mention Router 纯函数 |
 | `tests/github.test.ts` | GitHub webhook 签名、Mock App |
@@ -82,7 +83,7 @@
 
 ## 6. 已知限制
 
-1. **真实 DSH/GitHub/IM 未在本机联调**：使用 Fake Runtime、Mock GitHub、模拟 appchat 与合成加密报文验证协议；真实凭据需按部署文档配置，智能机器人 userid 映射需在真实企业确认。
+1. **真实 DSH/GitHub/IM 未在本机联调**：使用 Fake Runtime、Mock GitHub、模拟 appchat 与合成加密报文验证协议；真实凭据需按部署文档配置，智能机器人 userid 映射需在真实企业确认。直连 LLM 的 `run_command` 是真实 shell，生产必须把 Worker 放进隔离容器，不能挂载平台 `.env`/宿主目录。
 2. **企业微信无原生线程**：智能机器人只推送群内 @ 消息，追问也需要 @；用 `/status` 等命令或控制台。
 3. **企业微信自动拉群仅 `appchat` 自建群**；群内 @ 需要额外配置智能机器人，并由群主手动把机器人加入群一次（官方未开放自动拉机器人 API）。已有群只能二维码/链接。智能机器人回调的 `from.userid` 可能是加密 ID，当前未实现明文映射；联调前需确认与 OAuth userid 一致。
 4. **无自动建群**：邀请是项目邀请；群由团队创建后绑定。

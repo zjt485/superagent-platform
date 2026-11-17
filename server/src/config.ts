@@ -20,6 +20,12 @@ const integer = (fallback: number, min = 0) =>
 const optionalText = z
   .preprocess((value) => (value === undefined || value === null || value === '' ? undefined : String(value)), z.string().min(1).optional())
 
+const decimal = (fallback: number, min = 0) =>
+  z.preprocess(
+    (value) => (value === undefined || value === null || value === '' ? fallback : Number(value)),
+    z.number().min(min),
+  )
+
 const text = (fallback: string) =>
   z.preprocess((value) => (value === undefined || value === null || value === '' ? fallback : String(value)), z.string().min(1))
 
@@ -99,9 +105,19 @@ export const configSchema = z
     // Execution.
     WORKSPACES_DIR: text('./data/workspaces'),
     KEEP_WORKSPACES: boolean(false),
-    AGENT_RUNTIME: z.enum(['fake', 'command']).default('fake'),
+    AGENT_RUNTIME: z.enum(['fake', 'command', 'openai']).default('fake'),
     AGENT_COMMAND: optionalText,
     AGENT_TIMEOUT_MINUTES: integer(45, 1),
+
+    // Direct OpenAI-compatible runtime. Used when AGENT_RUNTIME=openai.
+    LLM_BASE_URL: text('https://api.deepseek.com/v1'),
+    LLM_API_KEY: optionalText,
+    LLM_MODEL: text('deepseek-chat'),
+    LLM_TEMPERATURE: decimal(0.2, 0),
+    LLM_MAX_OUTPUT_TOKENS: integer(4096, 256),
+    LLM_MAX_STEPS: integer(20, 1),
+    LLM_INPUT_COST_PER_1M: decimal(0, 0),
+    LLM_OUTPUT_COST_PER_1M: decimal(0, 0),
     GIT_AUTHOR_NAME: text('Superagent'),
     GIT_AUTHOR_EMAIL: text('superagent@example.invalid'),
 
