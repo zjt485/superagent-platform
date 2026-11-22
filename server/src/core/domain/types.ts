@@ -53,6 +53,8 @@ export type DecisionAction = 'new' | 'attach' | 'ignore' | 'stop' | 'command'
 
 export type ReportStatus = 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'
 
+export type InputKind = 'message' | 'approval' | 'policy' | 'note' | 'system'
+
 export type TurnStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timeout'
 
 export interface CoreTrigger {

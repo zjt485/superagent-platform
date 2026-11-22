@@ -111,6 +111,14 @@ export async function releaseThread(
     .where(eq(threads.id, id))
 }
 
+/** Drop the lease but keep the thread pending so a later tick can retry. */
+export async function releaseThreadLease(db: Database, id: string): Promise<void> {
+  await db
+    .update(threads)
+    .set({ routerLeaseUntil: null, updatedAt: new Date() })
+    .where(eq(threads.id, id))
+}
+
 export async function setThreadSummary(db: Database, id: string, summary: string): Promise<void> {
   await db.update(threads).set({ summary, updatedAt: new Date() }).where(eq(threads.id, id))
 }

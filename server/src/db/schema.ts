@@ -814,3 +814,4 @@ export type TriggerRow = typeof triggers.$inferSelect
 export type ThreadRow = typeof threads.$inferSelect
 export type TurnRow = typeof sessionTurns.$inferSelect
 export type DecisionRow = typeof decisions.$inferSelect
+export type TicketInputRow = typeof ticketInputs.$inferSelect
