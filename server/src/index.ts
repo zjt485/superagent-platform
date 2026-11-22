@@ -98,9 +98,11 @@ timers.push(
     void flushOutbox(ctx, ctx.senders, config.OUTBOX_BATCH_SIZE).catch((error) => log.warn({ err: error }, 'outbox flush failed'))
   }, config.OUTBOX_INTERVAL_MS),
 )
-timers.push(setInterval(() => {
-  void reapStaleTurns({ ...ctx, queue }).catch((error) => log.warn({ err: error }, 'turn reaper failed'))
-}, 30_000))
+if (!config.CORE_ENABLED) {
+  timers.push(setInterval(() => {
+    void reapStaleTurns({ ...ctx, queue }).catch((error) => log.warn({ err: error }, 'turn reaper failed'))
+  }, 30_000))
+}
 timers.push(setInterval(() => {
   void cleanupExpiredSessions(ctx).catch((error) => log.warn({ err: error }, 'session cleanup failed'))
 }, 3_600_000))
