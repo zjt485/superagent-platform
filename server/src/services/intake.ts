@@ -19,6 +19,7 @@ import {
 } from '../db/schema.js'
 import { isUniqueViolation } from '../db/errors.js'
 import { receiveTrigger, type DualContext, type ReceiveResult } from '../dual/engine.js'
+import { receiveCoreTrigger, type CoreIntakeResult } from '../core/intake.js'
 
 export interface IngestResult {
   action: string
@@ -161,6 +162,19 @@ function mapResult(result: ReceiveResult): IngestResult {
   }
 }
 
+function mapCoreResult(result: CoreIntakeResult): IngestResult {
+  switch (result.action) {
+    case 'queued':
+      return { action: 'trigger_evaluated', reason: 'core_router' }
+    case 'command':
+      return { action: 'command', reason: 'core_command' }
+    case 'duplicate':
+      return { action: 'duplicate', duplicate: true }
+    case 'ignored':
+      return { action: 'ignored', reason: 'core_intake' }
+  }
+}
+
 export async function ingestInboundEvent(ctx: DualContext, event: InboundEvent): Promise<IngestResult[]> {
   const results: IngestResult[] = []
   for (const message of event.messages) {
@@ -200,7 +214,30 @@ export async function ingestInboundEvent(ctx: DualContext, event: InboundEvent):
     }
 
     const command = parseCommand(message.text)
-      const result = await receiveTrigger(ctx, {
+    if (ctx.config.CORE_ENABLED && command === null) {
+      const role = userId === null ? null : await getMembership(ctx, project.id, userId)
+      const core = await receiveCoreTrigger(ctx.db, {
+        projectId: project.id,
+        channelId: channel.id,
+        provider: message.provider,
+        externalId: message.providerMessageId,
+        threadKey,
+        actorUserId: userId,
+        actorExternalId: message.sender.externalId,
+        actorName: message.sender.name ?? null,
+        text: message.text,
+        address: message.mentionBot ? 'mention' : 'ambient',
+        isBot: message.sender.isBot ?? false,
+        mentionedBot: message.mentionBot,
+        replyTo: message.replyToMessageId ?? null,
+        raw: message.raw,
+        authorized: role !== null && project.status === 'active',
+        at: ctx.now(),
+      })
+      results.push(mapCoreResult(core))
+      continue
+    }
+    const result = await receiveTrigger(ctx, {
       provider: message.provider,
       externalId: message.providerMessageId,
       chatId: message.externalChatId,

@@ -19,6 +19,9 @@ import type { DualWorkerContext } from './dual/worker.js'
 import { createTurnRuntime } from './dual/runtime.js'
 import { RealGitOps } from './worker/git.js'
 import { FakeGitOps } from './worker/fake-git.js'
+import { startCoreLoop } from './core/worker/loop.js'
+import { RuntimeExecutor } from './core/worker/runtime-executor.js'
+import { RuleBasedRouterModel } from './core/router/model.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -63,7 +66,18 @@ if (wecomBot) {
 
 const app = await buildApp(ctx)
 
-const inlineWorker = config.INLINE_WORKER
+const coreLoop = config.CORE_ENABLED
+  ? startCoreLoop({
+      db: handle.db,
+      model: new RuleBasedRouterModel(),
+      executor: new RuntimeExecutor(createTurnRuntime(config, log)),
+      now: deps.now,
+      intervalMs: config.CORE_POLL_INTERVAL_MS,
+      log,
+    })
+  : null
+
+const inlineWorker = config.INLINE_WORKER && !config.CORE_ENABLED
   ? startInlineWorker(
       {
         ...deps,
@@ -97,6 +111,7 @@ log.info({ port: config.PORT, queue: config.QUEUE_DRIVER, github: github.mode, d
 async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'api shutting down')
   for (const timer of timers) clearInterval(timer)
+  await coreLoop?.stop().catch(() => {})
   await inlineWorker?.stop().catch(() => {})
   await wecomBot?.stop().catch(() => {})
   await app.close().catch(() => {})

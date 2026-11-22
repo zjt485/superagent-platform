@@ -101,6 +101,9 @@ export const configSchema = z
      * execute repository code.
      */
     INLINE_WORKER: boolean(false),
+    /** Route new messages through the agentd-style core instead of dual intake. */
+    CORE_ENABLED: boolean(false),
+    CORE_POLL_INTERVAL_MS: integer(1000, 50),
 
     // Execution.
     WORKSPACES_DIR: text('./data/workspaces'),

@@ -11,8 +11,10 @@
     "test:watch": "vitest",
     "dev:api": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/worker-main.ts",
+    "core:worker": "tsx src/core-worker-main.ts",
     "start:api": "node dist/index.js",
     "start:worker": "node dist/worker-main.js",
+    "start:core-worker": "node dist/core-worker-main.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate-cli.ts",
     "demo": "tsx src/demo.ts"
