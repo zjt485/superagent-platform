@@ -22,6 +22,7 @@ import { FakeGitOps } from './worker/fake-git.js'
 import { startCoreLoop } from './core/worker/loop.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
 import { RuleBasedRouterModel } from './core/router/model.js'
+import { GitDeliveryProvider } from './core/worker/delivery.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -71,6 +72,13 @@ const coreLoop = config.CORE_ENABLED
       db: handle.db,
       model: new RuleBasedRouterModel(),
       executor: new RuntimeExecutor(createTurnRuntime(config, log)),
+      delivery: new GitDeliveryProvider({
+        db: handle.db,
+        git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
+        github,
+        author: { name: config.GIT_AUTHOR_NAME, email: config.GIT_AUTHOR_EMAIL },
+        webBase: config.GITHUB_WEB_BASE,
+      }),
       now: deps.now,
       intervalMs: config.CORE_POLL_INTERVAL_MS,
       log,

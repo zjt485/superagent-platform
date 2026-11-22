@@ -99,6 +99,17 @@ export async function setTicketStage(
   return row
 }
 
+export async function setTicketDelivery(
+  db: Database,
+  id: string,
+  input: { branch: string | null; prUrl: string | null; at: Date },
+): Promise<void> {
+  await db
+    .update(tickets)
+    .set({ branch: input.branch, prUrl: input.prUrl, updatedAt: input.at })
+    .where(eq(tickets.id, id))
+}
+
 export async function setTicketWorktree(
   db: Database,
   id: string,

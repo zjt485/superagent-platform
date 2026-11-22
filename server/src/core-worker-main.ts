@@ -1,16 +1,19 @@
 /** Standalone Router/Dispatcher worker for CORE_ENABLED deployments. */
 
-import { loadConfig } from './config.js'
+import { githubMode, loadConfig } from './config.js'
 import { loadLocalEnv } from './env.js'
 import { createLogger } from './logger.js'
 import { openDatabase } from './db/client.js'
 import { repos } from './db/schema.js'
 import { createTurnRuntime } from './dual/runtime.js'
+import { createGithub } from './github/index.js'
 import { RuleBasedRouterModel } from './core/router/model.js'
+import { GitDeliveryProvider } from './core/worker/delivery.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
 import { GitWorkspaceProvider } from './core/worker/workspace-provider.js'
 import { startCoreLoop } from './core/worker/loop.js'
-import { gitAuthEnv } from './worker/git.js'
+import { FakeGitOps } from './worker/fake-git.js'
+import { RealGitOps, gitAuthEnv } from './worker/git.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -31,11 +34,21 @@ const workspace = new GitWorkspaceProvider({
   env,
 })
 
+const github = createGithub(config, log)
+const delivery = new GitDeliveryProvider({
+  db: handle.db,
+  git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
+  github,
+  author: { name: config.GIT_AUTHOR_NAME, email: config.GIT_AUTHOR_EMAIL },
+  webBase: config.GITHUB_WEB_BASE,
+})
+
 const loop = startCoreLoop({
   db: handle.db,
   model: new RuleBasedRouterModel(),
   executor: new RuntimeExecutor(createTurnRuntime(config, log)),
   workspace,
+  delivery,
   now: () => new Date(),
   intervalMs: config.CORE_POLL_INTERVAL_MS,
   log,

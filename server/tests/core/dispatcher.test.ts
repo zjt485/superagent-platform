@@ -151,6 +151,27 @@ describe('core dispatcher', () => {
     expect(failedTurn?.status).toBe('failed')
   })
 
+  it('persists branch and PR after delivering a ready report', async () => {
+    const { ticket } = await seedTurn()
+    const delivery = {
+      async deliver() {
+        return { branch: 'agent/t-deliver', prUrl: 'https://github.com/demo/pull/1', committed: true }
+      },
+    }
+    await dispatchOnce({
+      db: handle.db,
+      executor: new FakeExecutor(() => ({ status: 'ready', summary: 'done', changedFiles: ['a.ts'] })),
+      now: () => new Date('2026-11-22T00:05:00Z'),
+      delivery,
+    })
+    const [stored] = await handle.db.select().from(tickets).where(eq(tickets.id, ticket.id))
+    expect(stored?.stage).toBe('review')
+    expect(stored?.branch).toBe('agent/t-deliver')
+    expect(stored?.prUrl).toBe('https://github.com/demo/pull/1')
+    const [report] = await handle.db.select().from(reports).where(eq(reports.ticketId, ticket.id))
+    expect(report?.prUrl).toBe('https://github.com/demo/pull/1')
+  })
+
   it('builds the executor packet for a real runtime', async () => {
     const { ticket } = await seedTurn()
     const runtime = new FakeRuntime()

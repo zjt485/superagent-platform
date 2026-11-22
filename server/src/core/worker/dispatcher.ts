@@ -23,9 +23,10 @@ import { newId } from '../../domain/ids.js'
 import { nextStage } from '../domain/stage.js'
 import type { Report, TicketStage } from '../domain/types.js'
 import { listUndeliveredInputs, markInputsDelivered } from '../store/inputs.js'
-import { setTicketStage, setTicketWorktree } from '../store/tickets.js'
+import { setTicketDelivery, setTicketStage, setTicketWorktree } from '../store/tickets.js'
 import { finishTurn } from '../store/turns.js'
 import { branchName } from '../domain/ids.js'
+import type { DeliveryProvider } from './delivery.js'
 import type { Executor } from './executor.js'
 import type { WorkspaceProvider } from './workspace-provider.js'
 
@@ -38,6 +39,7 @@ export interface DispatcherOptions {
   timeoutMs?: number
   env?: Record<string, string>
   workspace?: WorkspaceProvider
+  delivery?: DeliveryProvider
 }
 
 async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefined> {
@@ -237,6 +239,35 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     report = {
       status: 'failed',
       summary: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    }
+  }
+
+  if (report.status === 'ready' && options.delivery !== undefined) {
+    try {
+      const delivered = await options.delivery.deliver({
+        project,
+        ticket,
+        report,
+        worktreePath,
+        at,
+      })
+      report = {
+        ...report,
+        ...(delivered.branch === null ? {} : { branch: delivered.branch }),
+        ...(delivered.prUrl === null ? {} : { prUrl: delivered.prUrl }),
+      }
+      if (delivered.branch !== null || delivered.prUrl !== null) {
+        await setTicketDelivery(options.db, ticket.id, {
+          branch: delivered.branch,
+          prUrl: delivered.prUrl,
+          at,
+        })
+      }
+    } catch (error) {
+      report = {
+        status: 'failed',
+        summary: `交付失败：${error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500)}`,
+      }
     }
   }
 
