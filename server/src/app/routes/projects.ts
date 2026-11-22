@@ -18,7 +18,7 @@ import {
 import { getProjectRow, requireProjectAccess } from '../../services/access.js'
 import { listAudit } from '../../services/audit.js'
 import { tokensUsedToday, usageSeries } from '../../services/usage.js'
-import { tickets, users } from '../../db/schema.js'
+import { decisions, evaluations, tickets, users } from '../../db/schema.js'
 import { parsePolicy } from '../../domain/policy.js'
 import { overviewCounts, mainSessionView, turnToRun } from '../../dual/views.js'
 import { policyChanged } from '../../dual/engine.js'
@@ -55,6 +55,10 @@ const addMemberSchema = z
     message: '需要提供 userId，或 provider + externalId',
   })
 
+const routerRunsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+})
+
 const auditQuerySchema = z.object({
   action: z.string().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).optional(),
@@ -81,6 +85,32 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     const user = requireUser(request)
     const projectId = uuidParam(request)
     return { project: await projectBundle(ctx, projectId, user) }
+  })
+
+  /** Router runs replace the Main Session view for the core engine. */
+  app.get('/v1/projects/:id/router-runs', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    await requireProjectAccess(ctx, projectId, user.id, user.isAdmin)
+    const query = parseQuery(routerRunsQuerySchema, request)
+    const runs = await ctx.db
+      .select()
+      .from(evaluations)
+      .where(eq(evaluations.projectId, projectId))
+      .orderBy(desc(evaluations.createdAt))
+      .limit(query.limit ?? 30)
+    const ids = runs.map((run) => run.id)
+    const rows =
+      ids.length === 0
+        ? []
+        : await ctx.db.select().from(decisions).where(inArray(decisions.runId, ids))
+    const byRun = new Map<string, typeof rows>()
+    for (const row of rows) {
+      const list = byRun.get(row.runId) ?? []
+      list.push(row)
+      byRun.set(row.runId, list)
+    }
+    return { items: runs.map((run) => ({ ...run, decisions: byRun.get(run.id) ?? [] })) }
   })
 
   app.patch('/v1/projects/:id', async (request) => {
