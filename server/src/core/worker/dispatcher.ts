@@ -1,24 +1,33 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { and, asc, eq, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, isNotNull } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
 import {
   agentSessions,
+  mandates,
   outboxEvents,
   projects,
   reports,
+  sessionMessages,
   sessionTurns,
   tickets,
+  type ProjectRow,
+  type TicketInputRow,
+  type TicketRow,
   type TurnRow,
 } from '../../db/schema.js'
+import { buildExecutorPrompt } from '../../dual/prompts.js'
+import type { ExecutorTurnPacket } from '../../dual/types.js'
 import { newId } from '../../domain/ids.js'
 import { nextStage } from '../domain/stage.js'
 import type { Report, TicketStage } from '../domain/types.js'
 import { listUndeliveredInputs, markInputsDelivered } from '../store/inputs.js'
-import { setTicketStage } from '../store/tickets.js'
+import { setTicketStage, setTicketWorktree } from '../store/tickets.js'
 import { finishTurn } from '../store/turns.js'
+import { branchName } from '../domain/ids.js'
 import type { Executor } from './executor.js'
+import type { WorkspaceProvider } from './workspace-provider.js'
 
 export interface DispatcherOptions {
   db: Database
@@ -26,6 +35,9 @@ export interface DispatcherOptions {
   now: () => Date
   worktreeRoot?: string
   transcriptRoot?: string
+  timeoutMs?: number
+  env?: Record<string, string>
+  workspace?: WorkspaceProvider
 }
 
 async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefined> {
@@ -84,6 +96,75 @@ function stageForReport(current: TicketStage, report: Report): TicketStage {
   }
 }
 
+async function buildPacket(
+  db: Database,
+  project: ProjectRow,
+  ticket: TicketRow,
+  turn: TurnRow,
+  inputs: TicketInputRow[],
+): Promise<{ packet: ExecutorTurnPacket; prompt: string }> {
+  const policyVersion = ticket.policyVersion ?? 'v1'
+  const [mandate] = await db.select().from(mandates).where(eq(mandates.ticketId, ticket.id))
+  const [latest] = await db
+    .select()
+    .from(reports)
+    .where(eq(reports.ticketId, ticket.id))
+    .orderBy(desc(reports.createdAt))
+    .limit(1)
+  const recent = await db
+    .select()
+    .from(sessionMessages)
+    .where(eq(sessionMessages.sessionId, turn.sessionId))
+    .orderBy(desc(sessionMessages.createdAt))
+    .limit(12)
+
+  const packet: ExecutorTurnPacket = {
+    role: 'executor',
+    project: {
+      id: project.id,
+      name: project.name,
+      slug: project.slug,
+      policyVersion,
+      policy: project.policyJson as unknown as Record<string, unknown>,
+    },
+    ticket: {
+      id: ticket.id,
+      title: ticket.title,
+      body: ticket.body,
+      plan: ticket.plan,
+      planApproved: ticket.planApprovedAt !== null,
+      branch: ticket.branch,
+      prUrl: ticket.prUrl,
+      requesterName: ticket.requesterName,
+    },
+    mandate: {
+      scope: mandate?.scope ?? ticket.title,
+      strength: mandate?.strength ?? 'explicit',
+      policyVersion: mandate?.policyVersion ?? policyVersion,
+      matchedRules: mandate?.matchedRules ?? [],
+    },
+    inputs: inputs.map((input) => ({
+      id: input.id,
+      source: input.source,
+      text: input.text,
+      isPerson: input.isPerson,
+      createdAt: input.createdAt.toISOString(),
+    })),
+    latestReport:
+      latest === undefined
+        ? null
+        : {
+            status: latest.status,
+            summary: latest.summary,
+            plan: latest.plan,
+            attention: latest.attentionQuestion,
+          },
+    transcript: recent.reverse().map((message) => ({ role: message.role, content: message.content })),
+    workspaceReady: ticket.worktreePath !== null,
+  }
+  return { packet, prompt: buildExecutorPrompt(packet) }
+}
+
 /** Claim one queued executor turn, run it and persist its report. */
 export async function dispatchOnce(options: DispatcherOptions): Promise<boolean> {
   const at = options.now()
@@ -107,25 +188,50 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     await setTicketStage(options.db, ticket.id, runningStage, at)
   }
 
-  const inputs = await listUndeliveredInputs(options.db, ticket.id)
-  await markInputsDelivered(options.db, inputs.map((input) => input.id), turn.id, at)
   const root = options.worktreeRoot ?? join(tmpdir(), 'superagent')
   const transcriptRoot = options.transcriptRoot ?? root
+  let worktreePath = ticket.worktreePath ?? join(root, 'tickets', ticket.id)
+  let transcriptPath = join(transcriptRoot, 'transcripts', `${ticket.id}.jsonl`)
+
+  if (options.workspace !== undefined) {
+    const workspace = await options.workspace.ensure({ project, ticket, turn })
+    worktreePath = workspace.worktreePath
+    transcriptPath = workspace.transcriptPath
+    if (ticket.worktreePath !== worktreePath) {
+      await setTicketWorktree(options.db, ticket.id, {
+        branch: ticket.branch ?? branchName(ticket.shortName ?? ticket.id.slice(0, 8)),
+        worktreePath,
+        baseRef: ticket.baseRef,
+        at,
+      })
+    }
+  }
+
+  const inputs = await listUndeliveredInputs(options.db, ticket.id)
+  await markInputsDelivered(options.db, inputs.map((input) => input.id), turn.id, at)
+  const built = await buildPacket(options.db, project, ticket, turn, inputs)
 
   let report: Report
   try {
     report = await options.executor.run({
       turnId: turn.id,
+      sessionId: turn.sessionId,
       projectId: project.id,
       projectName: project.name,
+      projectSlug: project.slug,
       ticketId: ticket.id,
       ticketShortName: ticket.shortName ?? ticket.id.slice(0, 8),
       ticketTitle: ticket.title,
+      ticketBody: ticket.body,
       seq: turn.seq ?? 1,
-      worktreePath: ticket.worktreePath ?? join(root, 'tickets', ticket.id),
-      transcriptPath: join(transcriptRoot, 'transcripts', `${ticket.id}.jsonl`),
+      worktreePath,
+      transcriptPath,
       inputs: inputs.map((input) => input.text),
       model: turn.model ?? null,
+      prompt: built.prompt,
+      packet: built.packet,
+      timeoutMs: options.timeoutMs ?? 45 * 60_000,
+      ...(options.env === undefined ? {} : { env: options.env }),
     })
   } catch (error) {
     report = {

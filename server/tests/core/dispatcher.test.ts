@@ -21,6 +21,8 @@ import { insertTurn } from '../../src/core/store/turns.js'
 import { insertTicketInput } from '../../src/core/store/inputs.js'
 import { dispatchOnce } from '../../src/core/worker/dispatcher.js'
 import { FakeExecutor } from '../../src/core/worker/fake-executor.js'
+import { RuntimeExecutor } from '../../src/core/worker/runtime-executor.js'
+import type { ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from '../../src/dual/types.js'
 
 let handle: DatabaseHandle
 
@@ -96,6 +98,15 @@ async function seedTurn() {
   return { projectId, channelId, ticket, sessionId, turn, input }
 }
 
+class FakeRuntime implements TurnRuntime {
+  readonly name = 'fake'
+  calls: TurnRuntimeInput[] = []
+  async run(input: TurnRuntimeInput): Promise<TurnRuntimeResult> {
+    this.calls.push(input)
+    return { output: { status: 'ready', summary: 'runtime done', changedFiles: ['src/a.ts'] }, tokens: 3, cost: 0 }
+  }
+}
+
 describe('core dispatcher', () => {
   it('runs a ready turn, records a report and opens the review stage', async () => {
     const { projectId, ticket, turn, input } = await seedTurn()
@@ -138,5 +149,27 @@ describe('core dispatcher', () => {
     expect(failedTicket?.stage).toBe('failed')
     const [failedTurn] = await handle.db.select().from(sessionTurns).where(eq(sessionTurns.id, failed.turn.id))
     expect(failedTurn?.status).toBe('failed')
+  })
+
+  it('builds the executor packet for a real runtime', async () => {
+    const { ticket } = await seedTurn()
+    const runtime = new FakeRuntime()
+    await dispatchOnce({
+      db: handle.db,
+      executor: new RuntimeExecutor(runtime),
+      now: () => new Date('2026-11-22T00:04:00Z'),
+      worktreeRoot: '/tmp/superagent-test',
+    })
+
+    const input = runtime.calls[0]
+    const packet = input?.packet as ExecutorTurnPacket
+    expect(packet.role).toBe('executor')
+    expect(packet.ticket.title).toBe('Fix login')
+    expect(packet.ticket.body).toBe('details')
+    expect(packet.inputs[0]?.text).toBe('修复登录页')
+    expect(input?.prompt).toContain('Fix login')
+    expect(input?.workspace).toContain(ticket.id)
+    const [stored] = await handle.db.select().from(tickets).where(eq(tickets.id, ticket.id))
+    expect(stored?.stage).toBe('review')
   })
 })

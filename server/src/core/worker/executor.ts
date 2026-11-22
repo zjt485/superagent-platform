@@ -1,17 +1,25 @@
+import type { ExecutorTurnPacket } from '../../dual/types.js'
 import type { Report } from '../domain/types.js'
 
 export interface TurnContext {
   turnId: string
+  sessionId: string
   projectId: string
   projectName: string
+  projectSlug: string
   ticketId: string
   ticketShortName: string
   ticketTitle: string
+  ticketBody: string
   seq: number
   worktreePath: string
   transcriptPath: string
   inputs: string[]
   model: string | null
+  prompt: string
+  packet: ExecutorTurnPacket
+  timeoutMs: number
+  env?: Record<string, string>
 }
 
 /** One turn of work; implementations may fork a child process or run in-process. */
