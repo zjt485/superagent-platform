@@ -20,6 +20,7 @@ import {
 import { isUniqueViolation } from '../db/errors.js'
 import { receiveTrigger, type DualContext, type ReceiveResult } from '../dual/engine.js'
 import { receiveCoreTrigger, type CoreIntakeResult } from '../core/intake.js'
+import { handleCoreCommand } from '../core/commands.js'
 
 export interface IngestResult {
   action: string
@@ -214,8 +215,26 @@ export async function ingestInboundEvent(ctx: DualContext, event: InboundEvent):
     }
 
     const command = parseCommand(message.text)
-    if (ctx.config.CORE_ENABLED && command === null) {
+    if (ctx.config.CORE_ENABLED) {
       const role = userId === null ? null : await getMembership(ctx, project.id, userId)
+      if (command !== null) {
+        const handled = await handleCoreCommand({
+          db: ctx.db,
+          projectId: project.id,
+          channelId: channel.id,
+          threadKey,
+          role,
+          command,
+          at: ctx.now(),
+          dedupeKey: `cmd:${message.providerMessageId}`,
+        })
+        results.push(
+          handled.action === 'command'
+            ? { action: 'command', reason: handled.reply ?? 'core_command' }
+            : { action: 'ignored', reason: handled.reason ?? 'core_command' },
+        )
+        continue
+      }
       const core = await receiveCoreTrigger(ctx.db, {
         projectId: project.id,
         channelId: channel.id,
