@@ -57,6 +57,18 @@ export const reportStatusEnum = pgEnum('report_status', ['progress', 'waiting', 
 export const subscriptionKindEnum = pgEnum('subscription_kind', ['own', 'context'])
 export const inputSourceEnum = pgEnum('input_source', ['trigger', 'person', 'note', 'policy', 'approval', 'system'])
 export const triggerKindEnum = pgEnum('trigger_kind', ['message', 'command', 'ci', 'pr_comment', 'pr_merge', 'pr_close', 'resume'])
+export const triggerDispositionEnum = pgEnum('trigger_disposition', [
+  'pending',
+  'attached',
+  'new_ticket',
+  'ignored',
+  'stopped',
+  'command',
+  'pending_review',
+])
+export const triggerAddressEnum = pgEnum('trigger_address', ['mention', 'direct', 'ambient'])
+export const decisionActionEnum = pgEnum('decision_action', ['new', 'attach', 'ignore', 'stop', 'command'])
+export const inputKindEnum = pgEnum('input_kind', ['message', 'approval', 'policy', 'note', 'system'])
 
 const createdAt = timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
 const updatedAt = timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow()
@@ -244,6 +256,9 @@ export const tickets = pgTable(
     planApprovedAt: timestamp('plan_approved_at', { withTimezone: true, mode: 'date' }),
     prUrl: text('pr_url'),
     branch: text('branch'),
+    shortName: text('short_name'),
+    worktreePath: text('worktree_path'),
+    baseRef: text('base_ref'),
     lastRunId: uuid('last_run_id'),
     closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }),
 
@@ -263,6 +278,31 @@ export const tickets = pgTable(
     index('tickets_project_status_idx').on(table.projectId, table.status),
     index('tickets_thread_idx').on(table.projectId, table.channelId, table.threadKey),
     index('tickets_created_idx').on(table.createdAt),
+    uniqueIndex('tickets_short_name_uq')
+      .on(table.projectId, table.shortName)
+      .where(sql`short_name is not null`),
+  ],
+)
+
+export const threads = pgTable(
+  'threads',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    channelId: uuid('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+    threadKey: text('thread_key').notNull(),
+    summary: text('summary'),
+    routerPending: boolean('router_pending').notNull().default(false),
+    routerLeaseUntil: timestamp('router_lease_until', { withTimezone: true, mode: 'date' }),
+    lastTriggerAt: timestamp('last_trigger_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex('threads_key_uq').on(table.projectId, table.channelId, table.threadKey),
+    index('threads_pending_idx').on(table.routerPending, table.routerLeaseUntil),
   ],
 )
 
@@ -448,12 +488,15 @@ export const triggers = pgTable(
     replyTo: text('reply_to'),
     raw: jsonb('raw').$type<unknown>(),
     evaluationId: uuid('evaluation_id'),
+    disposition: triggerDispositionEnum('disposition').notNull().default('pending'),
+    address: triggerAddressEnum('address').notNull().default('mention'),
     createdAt,
   },
   (table) => [
     uniqueIndex('triggers_provider_external_uq').on(table.provider, table.externalId),
     index('triggers_thread_idx').on(table.projectId, table.channelId, table.threadKey),
     index('triggers_project_created_idx').on(table.projectId, table.createdAt),
+    index('triggers_pending_idx').on(table.projectId, table.disposition, table.createdAt),
   ],
 )
 
@@ -472,6 +515,10 @@ export const evaluations = pgTable(
     decision: jsonb('decision').$type<unknown>(),
     reason: text('reason'),
     attempts: integer('attempts').notNull().default(0),
+    model: text('model'),
+    promptTokens: integer('prompt_tokens'),
+    outputTokens: integer('output_tokens'),
+    summary: text('summary'),
     startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
     endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
     createdAt,
@@ -481,6 +528,36 @@ export const evaluations = pgTable(
       .on(table.projectId, table.channelId, table.threadKey)
       .where(sql`status in ('queued', 'running')`),
     index('evaluations_project_status_idx').on(table.projectId, table.status),
+  ],
+)
+
+export const decisions = pgTable(
+  'decisions',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    runId: uuid('run_id')
+      .notNull()
+      .references(() => evaluations.id, { onDelete: 'cascade' }),
+    triggerId: uuid('trigger_id')
+      .notNull()
+      .references(() => triggers.id, { onDelete: 'cascade' }),
+    threadKey: text('thread_key'),
+    action: decisionActionEnum('action').notNull(),
+    ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
+    title: text('title'),
+    reason: text('reason').notNull(),
+    confidence: numeric('confidence', { precision: 4, scale: 2, mode: 'number' }),
+    payload: jsonb('payload').$type<Record<string, unknown>>(),
+    decidedAt: timestamp('decided_at', { withTimezone: true, mode: 'date' }).notNull(),
+    createdAt,
+  },
+  (table) => [
+    uniqueIndex('decisions_trigger_uq').on(table.triggerId),
+    index('decisions_run_idx').on(table.runId),
+    index('decisions_project_time_idx').on(table.projectId, table.decidedAt),
   ],
 )
 
@@ -522,6 +599,10 @@ export const sessionTurns = pgTable(
     assignmentId: uuid('assignment_id'),
     kind: turnKindEnum('kind').notNull(),
     status: turnStatusEnum('status').notNull().default('queued'),
+    model: text('model'),
+    seq: integer('seq'),
+    pid: integer('pid'),
+    exitCode: integer('exit_code'),
     input: jsonb('input').$type<unknown>(),
     prompt: text('prompt'),
     result: jsonb('result').$type<unknown>(),
@@ -541,6 +622,9 @@ export const sessionTurns = pgTable(
       .where(sql`status = 'running'`),
     index('session_turns_queue_idx').on(table.status, table.createdAt),
     index('session_turns_ticket_idx').on(table.ticketId, table.createdAt),
+    uniqueIndex('session_turns_ticket_seq_uq')
+      .on(table.ticketId, table.seq)
+      .where(sql`ticket_id is not null and seq is not null`),
   ],
 )
 
@@ -597,13 +681,18 @@ export const ticketInputs = pgTable(
       .references(() => tickets.id, { onDelete: 'cascade' }),
     triggerId: uuid('trigger_id').references(() => triggers.id, { onDelete: 'set null' }),
     source: inputSourceEnum('source').notNull(),
+    kind: inputKindEnum('kind').notNull().default('message'),
     text: text('text').notNull(),
     isPerson: boolean('is_person').notNull().default(false),
     deliveredAt: timestamp('delivered_at', { withTimezone: true, mode: 'date' }),
+    deliveredTurnId: uuid('delivered_turn_id').references(() => sessionTurns.id, { onDelete: 'set null' }),
     readAt: timestamp('read_at', { withTimezone: true, mode: 'date' }),
     createdAt,
   },
-  (table) => [index('ticket_inputs_ticket_idx').on(table.ticketId, table.createdAt)],
+  (table) => [
+    index('ticket_inputs_ticket_idx').on(table.ticketId, table.createdAt),
+    index('ticket_inputs_turn_idx').on(table.deliveredTurnId),
+  ],
 )
 
 export const assignments = pgTable(
@@ -696,8 +785,10 @@ export const schema = {
   outboxEvents,
   webhookDeliveries,
   agentSessions,
+  threads,
   triggers,
   evaluations,
+  decisions,
   mandates,
   sessionTurns,
   sessionMessages,
@@ -719,3 +810,7 @@ export type RepoRow = typeof repos.$inferSelect
 export type InviteRow = typeof invites.$inferSelect
 export type MemberRow = typeof projectMembers.$inferSelect
 export type OutboxRow = typeof outboxEvents.$inferSelect
+export type TriggerRow = typeof triggers.$inferSelect
+export type ThreadRow = typeof threads.$inferSelect
+export type TurnRow = typeof sessionTurns.$inferSelect
+export type DecisionRow = typeof decisions.$inferSelect
