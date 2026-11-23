@@ -1,6 +1,6 @@
 # Superagent Platform（MVP）
 
-服务端多项目 Agent 平台的 MVP 实现，按仓库根目录的 [`DEVELOPMENT_PLAN.md`](../DEVELOPMENT_PLAN.md) 开发。
+服务端多项目 Agent 平台的 MVP 实现，按 [`docs/STATUS.md`](docs/STATUS.md) 与 [`docs/CORE.md`](docs/CORE.md) 开发。
 
 > **项目组 = 一个 GitHub 仓库 + 一组成员 + 一套策略 + 一个绑定的 IM 群。**
 > 成员在群里 @bot 提需求；Agent 在隔离工作区改代码、跑测试、开 PR；人在群里或 PR 里评审；平台记录全链路审计。
@@ -153,6 +153,7 @@ platform/
 - [API.md](docs/API.md)：REST API、Webhook、内部接口、鉴权与错误码
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md)：Docker Compose、飞书/GitHub App 配置、Agent Runtime 接入、备份与运维
 - [STATUS.md](docs/STATUS.md)：FR / 验收标准逐条对照、测试映射、与方案的差异和已知限制
+- [CORE.md](docs/CORE.md)：agentd 风格 Router/Worker 内核的启用方式、本地仓库与当前迁移边界
 - [UI.md](docs/UI.md)：信息架构、设计令牌、页面状态与截图
 
 ## 安全边界
@@ -165,4 +166,4 @@ platform/
 
 ## License
 
-与仓库根目录一致：[MIT](../LICENSE)。
+[MIT](LICENSE)。
