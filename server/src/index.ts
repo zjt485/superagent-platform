@@ -21,7 +21,7 @@ import { RealGitOps } from './worker/git.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { startCoreLoop } from './core/worker/loop.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
-import { RuleBasedRouterModel } from './core/router/model.js'
+import { routerModelFromConfig } from './core/router/from-config.js'
 import { GitDeliveryProvider } from './core/worker/delivery.js'
 
 loadLocalEnv()
@@ -70,7 +70,7 @@ const app = await buildApp(ctx)
 const coreLoop = config.CORE_ENABLED
   ? startCoreLoop({
       db: handle.db,
-      model: new RuleBasedRouterModel(),
+      model: routerModelFromConfig(config),
       executor: new RuntimeExecutor(createTurnRuntime(config, log)),
       delivery: new GitDeliveryProvider({
         db: handle.db,

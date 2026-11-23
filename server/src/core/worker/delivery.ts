@@ -48,6 +48,18 @@ export class GitDeliveryProvider implements DeliveryProvider {
     const branch =
       input.ticket.branch ??
       branchName(input.ticket.shortName ?? input.ticket.id.slice(0, 8), this.options.branchPrefix ?? 'agent/')
+
+    if (repo.provider === 'local') {
+      const committed = await this.options.git.createBranchAndCommit({
+        dir: input.worktreePath,
+        branch,
+        message: `feat: ${input.ticket.title.slice(0, 120)}\n\nSuperagent ticket ${input.ticket.id}`,
+        author: this.options.author,
+        env: {},
+      })
+      return { branch, prUrl: null, committed }
+    }
+
     const token = await this.options.github.installationToken(repo.installationId)
     const env = gitAuthEnv(token, this.options.webBase ?? 'https://github.com')
 

@@ -7,7 +7,7 @@ import { openDatabase } from './db/client.js'
 import { repos } from './db/schema.js'
 import { createTurnRuntime } from './dual/runtime.js'
 import { createGithub } from './github/index.js'
-import { RuleBasedRouterModel } from './core/router/model.js'
+import { routerModelFromConfig } from './core/router/from-config.js'
 import { GitDeliveryProvider } from './core/worker/delivery.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
 import { GitWorkspaceProvider } from './core/worker/workspace-provider.js'
@@ -45,7 +45,7 @@ const delivery = new GitDeliveryProvider({
 
 const loop = startCoreLoop({
   db: handle.db,
-  model: new RuleBasedRouterModel(),
+  model: routerModelFromConfig(config),
   executor: new RuntimeExecutor(createTurnRuntime(config, log)),
   workspace,
   delivery,

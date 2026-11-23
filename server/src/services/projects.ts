@@ -464,7 +464,15 @@ export async function bindRepo(
   deps: Deps,
   projectId: string,
   actor: { id: string; name: string; isAdmin: boolean },
-  input: { installationId: string; owner: string; name: string; defaultBranch?: string; private?: boolean },
+  input: {
+    installationId: string
+    owner: string
+    name: string
+    defaultBranch?: string
+    private?: boolean
+    provider?: 'github' | 'local'
+    fullName?: string
+  },
 ) {
   const access = await requireProjectAccess(deps, projectId, actor.id, actor.isAdmin)
   assertOwner(access)
@@ -472,14 +480,15 @@ export async function bindRepo(
   const owner = input.owner.trim()
   const name = input.name.trim()
   if (!owner || !name) throw conflict('仓库 owner 和 name 不能为空')
-  const fullName = `${owner}/${name}`
+  const provider = input.provider ?? 'github'
+  const fullName = input.fullName ?? `${owner}/${name}`
   try {
     await deps.db
       .insert(repos)
       .values({
         id: newId(),
         projectId,
-        provider: 'github',
+        provider,
         installationId: input.installationId,
         owner,
         name,
@@ -492,6 +501,7 @@ export async function bindRepo(
       .onConflictDoUpdate({
         target: repos.projectId,
         set: {
+          provider,
           installationId: input.installationId,
           owner,
           name,
@@ -512,7 +522,7 @@ export async function bindRepo(
     actorLabel: actor.name,
     action: 'repo.bound',
     target: `repo:${fullName}`,
-    metadata: { installationId: input.installationId, defaultBranch: input.defaultBranch ?? 'main' },
+    metadata: { provider, installationId: input.installationId, defaultBranch: input.defaultBranch ?? 'main' },
   })
 }
 

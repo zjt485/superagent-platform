@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process'
+import { stat } from 'node:fs/promises'
+import { basename, isAbsolute, resolve } from 'node:path'
+import { promisify } from 'node:util'
 import { eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -8,6 +12,13 @@ import { bindRepo, listInstallations, recordInstallation, unbindRepo } from '../
 import { repos } from '../../db/schema.js'
 import { signValue, verifyValue } from '../../security/tokens.js'
 import { AppError, badRequest, conflict } from '../../errors.js'
+
+const run = promisify(execFile)
+
+const localRepoSchema = z.object({
+  path: z.string().trim().min(1).max(1000),
+  defaultBranch: z.string().trim().min(1).max(100).optional(),
+})
 
 const bindRepoSchema = z.object({
   installationId: z.string().min(1).max(40),
@@ -50,6 +61,33 @@ export function registerRepoRoutes(app: FastifyInstance, ctx: AppContext): void 
         ...(body.private === undefined ? {} : { private: body.private }),
       })
     }
+    const [repo] = await ctx.db.select().from(repos).where(eq(repos.projectId, projectId))
+    return { repo: repo ?? null }
+  })
+
+  /** Bind a local directory instead of a GitHub repository. */
+  app.post('/v1/projects/:id/local-repo', async (request) => {
+    const user = requireUser(request)
+    const projectId = uuidParam(request)
+    const body = parseBody(localRepoSchema, request)
+    if (!isAbsolute(body.path)) throw badRequest('本地仓库路径必须是绝对路径')
+    const path = resolve(body.path)
+    const info = await stat(path).catch(() => null)
+    if (info === null || !info.isDirectory()) throw badRequest('本地仓库目录不存在')
+    try {
+      await run('git', ['-C', path, 'rev-parse', '--is-inside-work-tree'], { windowsHide: true })
+    } catch {
+      throw badRequest('目录不是 git 仓库')
+    }
+    await bindRepo(ctx, projectId, user, {
+      installationId: 'local',
+      owner: 'local',
+      name: basename(path),
+      fullName: path,
+      defaultBranch: body.defaultBranch ?? 'main',
+      private: true,
+      provider: 'local',
+    })
     const [repo] = await ctx.db.select().from(repos).where(eq(repos.projectId, projectId))
     return { repo: repo ?? null }
   })
