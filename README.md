@@ -1,168 +1,106 @@
-# Superagent Platform（MVP）
+# Superagent Platform — 多角色产研数字员工平台
 
-服务端多项目 Agent 平台的 MVP 实现，按 [`docs/STATUS.md`](docs/STATUS.md) 与 [`docs/CORE.md`](docs/CORE.md) 开发。
-
-> **项目组 = 一个 GitHub 仓库 + 一组成员 + 一套策略 + 一个绑定的 IM 群。**
-> 成员在群里 @bot 提需求；Agent 在隔离工作区改代码、跑测试、开 PR；人在群里或 PR 里评审；平台记录全链路审计。
+基于 DeepSeek Superagent 架构演进的 **Grok Bot 风格多 Bot 产研数字员工平台**：让多个可配置的 AI 数字员工（研究员、产品经理、全栈工程师、QA 测试）像真实同事一样入驻 Web 协作房间与飞书 / 企业微信群聊，在每 Bot 持久沙箱内执行任务、接力协作、受「Suggest, don't send」工具级审批保护，并支持 7×24 定时与事件巡检。
 
 ![项目概览](docs/screenshots/03-project-overview.png)
 
-## 当前状态
+## 核心特性
 
-- **可运行**：控制面 API、Web 控制台、Worker、飞书 / 企业微信适配、GitHub App 适配、PGlite/Postgres、DB/Redis 队列、Outbox 通知、Docker Compose 部署文件与文档均已实现。
-- **核心是双 Agent**：每个项目一个持久 **Main Session**（Trigger → Eval/Decision → Ticket/Mandate），每张工单一个持久 **Executor Session**（Assignment → Report → PR）。旧的 plan/execute Run 已移除。
-- **开箱即用的是演示链路**：`pnpm demo` 使用 Mock GitHub + Fake Agent Runtime，在没有外部凭据的机器上跑通「@bot → Main Session → Executor Session → PR → 合并关闭」。
-- **接真实环境需要配置**：飞书应用、GitHub App、Postgres/Redis，以及 Agent Runtime。支持外部 `AGENT_COMMAND`（DSH headless），或 `AGENT_RUNTIME=openai` 直连 OpenAI-compatible LLM（见 [部署文档](docs/DEPLOYMENT.md)）。
-- 已知限制与和原方案的差异见 [STATUS.md](docs/STATUS.md)。
+- **统一内核（`server/src/core/`）**：收敛为单一的 Router → Ticket/Mandate → Executor Turn → Delivery 内核，支持 `AGENT_RUNTIME=openai` 直连任意 OpenAI-compatible 模型（DeepSeek / OpenAI / vLLM），以及外部 `command` 和本地 `fake` 运行时。
+- **零门槛建项**：代码仓库（GitHub App / 本地 Git）与 IM 群均作为可选连接器；新建项目立即激活，无需先绑仓即可在 Web 房间里启动多 Bot 协作。
+- **Bot 团队（Roster）与一键盘点模板**：支持每项目创建多个独立人设、模型、工具权限与沙箱配置的 Bot；一键导入 4 角色产研模板（`@researcher`、`@pm`、`@engineer`、`@qa`）。
+- **协作房间（Rooms）+ 实时围观（SSE）+ 多 Bot 接力（Handoff）**：三栏协作界面（房间列表 + 聊天流 + SSE 实时围观面板），支持群聊、与单个 Bot 私聊（DM）、双向同步飞书/企微群消息，以及受 `maxHops`、防自交接和预算熔断保护的显式 `handoff` 接力。
+- **工具级审批（Suggest, don't send）+ 飞书交互卡片**：支持工具级 `allow` / `confirm` / `deny` 策略；命中 `confirm` 时自动暂停 Turn 并落库 `checkpoint`，向 Web 审批收件箱与飞书交互卡片（`/webhooks/feishu/card`）推送预览，审批后从断点续跑。
+- **每 Bot 持久沙箱 + 浏览器截图 + MCP 连接器**：提供 `LocalProcessSandboxProvider` 与 `DockerSandboxProvider`（`deploy/bot-sandbox.Dockerfile`），内置 `browser_open/click/type/extract/screenshot` 工具（自动归档产物并推送 SSE 截图预览），以及支持 `Streamable HTTP / SSE / Stdio` 的 MCP 客户端与工具发现。
+- **7×24 定时与事件巡检（Routines）**：支持标准 5 段 Cron 定时巡检与 GitHub `push`/`pull_request` 事件触发，内置「无事不扰（quiet-when-clean）」静默归档策略与 Web「立即试跑」。
 
 ## 快速开始（无需外部凭据）
 
-要求：Node.js ≥ 22.19，pnpm ≥ 10。
+要求：Node.js ≥ 22，pnpm ≥ 10。
 
 ```bash
-cd platform
 pnpm install
 pnpm build          # 构建 Web 控制台与服务端
-pnpm demo           # 初始化演示数据、跑通一次工单，并在 :3100 启动
+pnpm demo           # 初始化 4 角色产研团队、示例工单与 QA 巡检，并在 :3100 启动
 ```
 
-打开 <http://127.0.0.1:3100>，用**开发登录**输入昵称 `Alice`（Owner）或 `Bob`（Member）。
+打开 <http://127.0.0.1:3100>，使用**开发登录**输入昵称 `Alice`（Owner）或 `Bob`（Member）即可体验：
 
-演示会：
+1. **协作房间**：查看 4 个数字员工入驻的项目主群、`@bot` 点名委派与右侧 SSE 实时围观面板；
+2. **Bot 团队**：编辑人设、工具审批策略或发起 1v1 私聊；
+3. **审批收件箱**：审批或打回高风险工具调用并从断点续跑；
+4. **定时巡检**：查看默认创建的「每日 09:00 QA 回归与依赖巡检」并一键试跑；
+5. **连接器**：绑定本地 Git 仓库 / GitHub App，接入外部 MCP 服务器并一键发现工具。
 
-1. 创建项目「演示项目」，绑定 Mock 仓库 `demo-org/hello-world` 和飞书群 `oc_demo_project`；
-2. 生成一条邀请链接，并创建「企微扫码演示」项目：项目详情页直接显示企业微信扫码入群二维码（演示使用模拟 appchat 群；配置真实 corp 凭据与智能机器人后走同一接口）；
-3. 模拟一条 @bot 消息进入 **Main Session**，由它做 Decision 创建工单和 Mandate；
-4. **Executor Session** 领取 Turn，在工作区产生真实文件改动，平台提交到 `agent/*` 分支并创建 Mock PR；
-5. 把「已接单」「PR 已创建」推送到模拟飞书群（终端输出）。
-
-> 想重新开始：停止 demo，删除 `platform/server/data` 后再次执行 `pnpm demo`。
-
-本地接真实飞书/企业微信回调（隧道 + 单进程 Worker）见 [部署文档 §13](docs/DEPLOYMENT.md#13-本地接企业微信联调单进程)。
-
-开发模式（API 与 Vite 热更新分开跑）：
+开发模式：
 
 ```bash
-pnpm dev:api     # http://127.0.0.1:3000，PGlite 落盘到 server/data/pglite
-pnpm dev:web     # http://127.0.0.1:5173，代理 /v1 与 /webhooks
-pnpm dev:worker  # 可选：独立 Worker 进程
+pnpm dev:api        # http://127.0.0.1:3000（PGlite 落盘到 server/data/pglite）
+pnpm dev:web        # http://127.0.0.1:5173（代理 /v1 与 /webhooks）
+pnpm dev:worker     # 独立核心 Worker（Router + Executor + Routines）
 ```
 
-常用校验：
+校验与测试：
 
 ```bash
 pnpm typecheck
 pnpm test
-pnpm check      # typecheck + test + build
+pnpm check          # typecheck + test + build
 ```
 
-## 能力总览
-
-| 能力 | 实现 |
-| --- | --- |
-| 多项目 / 单仓库 | 项目绑定一个 GitHub 仓库；项目间数据按 `project_id` 隔离 |
-| 成员与角色 | Owner / Maintainer / Member / Viewer；邀请二维码、角色变更、移除 |
-| 扫码入项目 + 入群 | 项目邀请二维码 → OAuth 登录 → 加入项目；企业微信应用群可在项目详情页直接展示扫码入群二维码，扫码后自动加入项目与项目群 |
-| IM 接入 | 飞书（默认，含加密回调、验签、@bot 判定、线程回复）；企业微信（appchat 建群/拉人、OAuth、群二维码；**智能机器人长连接**接收群内 @ 与回复） |
-| @bot 接单 | Main Session 只评估项目成员的 @bot Trigger；非 @、非成员、非项目群忽略；线程回复直接作为 Input |
-| 命令 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` |
-| Main Session | 每项目一个持久 Session；Eval → Decision（accept/ignore/attach/stop）→ Ticket + Mandate + 回复 |
-| Executor Session | 每工单一个持久 Session；Assignment → Report（progress/waiting/ready/blocked/failed/dropped）→ PR |
-| 工单阶段 | queued / working / plan_review / idle / review / blocked / failed / answer / done / cancelled |
-| 审批 | 计划审批是 Executor 内部的门；批准写 approval Input 后续跑 |
-| 订阅 / Input | 工单订阅自己的线程；线程消息、PR 评论、审批、Policy 变更都以 Input 投递 |
-| GitHub | GitHub App installation token、分支推送、PR 创建、PR 合并/关闭、评论续跑、CI 状态回传 |
-| 审批 | 计划审批（可配置强制）、PR 不自动合并、审批记录 |
-| 通知 | Outbox 事务表 + 幂等发送 + 指数退避重试；无 IM 凭据时演示为模拟发送 |
-| 审计 | Trigger → Eval/Decision → Ticket/Mandate → Turn/Report → PR/Approval 全链路 |
-| 配额 | 每项目并发 Executor Turn、每日 Token 预算、单次运行超时、全局 Worker 并发 |
-| 控制台 | 项目、Main Session、工单/Executor Session、Turn 日志、成员、仓库、群、邀请、策略、审计、用量 |
-| 部署 | Dockerfile + Compose（api / worker / postgres / redis / caddy），HTTPS，健康检查 |
-
-## 架构
+## 系统架构
 
 ```text
-飞书/企业微信 ── webhook ──► Trigger ──► Eval 队列 ──► Main Session（每项目一个）
-GitHub ──────── webhook ──► Ticket Input ──┐                 │ Decision
-Web 控制台 ───── HTTPS ────► Console/API ───┼──────► Ticket + Mandate
-                                           │                 │ Assignment
-                                           │                 ▼
-                                           │        Executor Session（每工单一个）
-                                           │                 │ Report
-                                           └──── report/PR ◄─┘
-                                                             │
-                                                    agent/* 分支 → PR
+Web Rooms / 飞书(含交互卡片) / 企微 / GitHub / 7×24 Routines
+                           │
+                           ▼
+             triggers (message / handoff / routine / resume)
+                           │
+                           ▼
+            Core Router (Rule / LLM, 含 @slug 路由与成本记账)
+                           │
+                           ▼
+          Ticket + Mandate + Executor Session Turn (带心跳/预算/并发上限)
+                           │
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+  Bot 持久沙箱       Browser & 产物       MCP 连接器
+ (Local/Docker)     (Playwright/SVG)   (HTTP/SSE/Stdio)
+        └──────────────────┼──────────────────┘
+                           ▼
+          Tool Gate (allow / confirm→Checkpoint / deny)
+                           │
+           ┌───────────────┴───────────────┐
+           ▼                               ▼
+   Web SSE / 审批收件箱           Outbox → 飞书卡片 / 企微 / GitHub PR
 ```
 
-- Main Session 只路由：读 Policy、Trigger、开放工单和 transcript，返回 decisions；不执行代码。
-- Executor Session 只做单张工单：持久目录与 transcript，返回 reports；平台负责 commit/push/PR。
-- 所有模型调用都是 `session_turns` 中的 Turn；一个 Session 同时只有一个 running Turn。
-
-- **控制面不执行 shell**：API 只做鉴权、状态与调度。
-- **每张工单独立目录**：Executor Session 在 `${project}/tickets/${ticket}` 持久工作，不跨项目复用。
-- **模型调用可替换**：通过 `TurnRuntime` 接入；支持 Fake、外部命令（DSH）和 OpenAI-compatible 直连三种运行时。
-- **GitHub 用 App 短期 token**：按任务下发 installation token，任务结束失效。
-- **IM Adapter 统一接口**：`verifyAndParse` / `send`，飞书与企业微信各自封装协议差异。
+## 目录结构
 
 ```text
-platform/
-├── server/                     # Node.js 22 + TypeScript + Fastify + Drizzle
+superagent-platform/
+├── server/
 │   ├── src/
-│   │   ├── app/                # Fastify 组装、路由
-│   │   ├── dual/               # Main/Executor Session、Engine、Prompt、Runtime、Worker、Views
-│   │   ├── services/           # 项目、邀请、接入、GitHub webhook、审计、Outbox
-│   │   ├── domain/             # 状态、命令、策略、消息、IM/GitHub 端口
-│   │   ├── db/                 # Drizzle schema 与迁移
-│   │   ├── im/                 # 飞书 / 企业微信适配（验签、加解密、发送、OAuth）
-│   │   ├── github/             # GitHub App 客户端与 webhook 验签
-│   │   └── worker/             # Git 交付、Worker 入口、进程内联 Worker
-│   ├── drizzle/                # SQL 迁移
-│   ├── public/                 # 构建后的 Web 控制台
-│   └── tests/                  # Vitest：双 Agent 核心、服务、适配器、Webhook
-├── web/                        # React 18 + Vite + TypeScript 控制台
-├── docs/                       # 架构、API、部署、状态、UI 说明
-├── deploy/                     # Agent Runtime wrapper 模板
-├── Dockerfile / docker-compose.yml / Caddyfile / .env.example
-└── scripts/ui-screenshots.mjs  # 视觉回归截图工具（Chrome CDP）
+│   │   ├── app/                # Fastify 组装与路由（bots/rooms/approvals/connectors/routines/webhooks）
+│   │   ├── core/               # 统一核心：agent(openai/gate)、router、worker、sandbox、mcp、routines
+│   │   ├── services/           # 业务服务层（项目、成员、邀请、Bot、Room、审批、连接器、巡检、Outbox）
+│   │   ├── db/                 # Drizzle schema 与 SQL 迁移（0000 ~ 0010）
+│   │   ├── im/                 # 飞书（含交互卡片）与企业微信适配
+│   │   └── github/             # GitHub App 客户端与 Webhook 验签
+│   ├── drizzle/                # PostgreSQL / PGlite 迁移文件
+│   └── tests/                  # Vitest 单元与端到端集成测试
+├── web/                        # React 18 + Vite + TypeScript 工作台
+├── deploy/                     # bot-sandbox.Dockerfile 与运行时包装模板
+├── docs/                       # 设计文档、实施计划、架构、API 与部署指南
+└── docker-compose.yml          # api + core-worker + postgres + redis + caddy
 ```
-
-## 界面
-
-| Main Session | 工单 / Executor Session |
-| --- | --- |
-| ![Main Session](docs/screenshots/03b-main-session.png) | ![工单](docs/screenshots/05-ticket.png) |
-
-| 企业微信扫码入群 | 扫码后自动入群 |
-| --- | --- |
-| ![企业微信扫码](docs/screenshots/03c-wecom-join.png) | ![已入群](docs/screenshots/03d-wecom-joined.png) |
-
-| 邀请二维码 | 扫码入群 |
-| --- | --- |
-| ![邀请](docs/screenshots/06b-invite-qr.png) | ![扫码入群](docs/screenshots/07f-invite-group.png) |
-
-| 深色主题 | IM 群与入群配置 |
-| --- | --- |
-| ![深色](docs/screenshots/08-project-dark.png) | ![IM 群](docs/screenshots/07g-channel.png) |
-
-更多页面与设计说明见 [UI.md](docs/UI.md)。
 
 ## 文档
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md)：双 Agent 模型、数据模型、请求链路、Turn/Report、Queue/Outbox、安全设计
-- [REWRITE.md](docs/REWRITE.md)：本次从 plan/execute Run 迁移到 Main/Executor Session 的目标与协议
-- [API.md](docs/API.md)：REST API、Webhook、内部接口、鉴权与错误码
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md)：Docker Compose、飞书/GitHub App 配置、Agent Runtime 接入、备份与运维
-- [STATUS.md](docs/STATUS.md)：FR / 验收标准逐条对照、测试映射、与方案的差异和已知限制
-- [CORE.md](docs/CORE.md)：agentd 风格 Router/Worker 内核的启用方式、本地仓库与当前迁移边界
-- [UI.md](docs/UI.md)：信息架构、设计令牌、页面状态与截图
-
-## 安全边界
-
-- 所有业务查询按 `project_id` 强制隔离；跨项目访问返回 404。
-- 会话使用 HttpOnly Cookie；写请求校验 CSRF；Webhook 验签 + 事件 ID 幂等。
-- GitHub 只允许推送 `agent/*` 分支，不自动合并，建议开启 branch protection。
-- Agent 工作目录隔离；容器部署时 Worker 不挂载宿主目录、不暴露 Docker socket。
-- 群消息、Issue、PR 评论全部按不可信输入处理；授权与成员校验在模型之外执行。
+- [架构设计文档](docs/superpowers/specs/2026-11-26-grok-bot-architecture-design.md)
+- [分阶段实施计划](docs/superpowers/plans/2026-11-26-grok-bot-implementation-plan.md)
+- [实现状态与验收对照](docs/STATUS.md)
+- [API 文档](docs/API.md) · [部署文档](docs/DEPLOYMENT.md) · [内核说明](docs/CORE.md)
 
 ## License
 

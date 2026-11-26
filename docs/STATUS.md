@@ -1,102 +1,26 @@
-# 实现状态与验收对照（双 Agent 核心）
+# 实现状态与验收对照（Grok Bot 多 Bot 产研平台）
 
-核心已从“确定性路由 + plan/execute Runs”重写为 **Main Session / Executor Session 双 Agent**。旧的 `runs` / `run_events` 表和代码已删除（迁移 0004）。服务壳（项目、成员、邀请、IM、GitHub、控制台、Outbox、审计）复用。
+系统已完成从旧版双栈（`dual/` + `core/`）到**统一 Core 引擎 + 多角色产研数字员工平台**的全面升级（Phase 0 ~ Phase 4 全部完成）。
 
-测试：`pnpm test`，当前 **59 tests / 12 files**。
+## 1. 阶段完成总览
 
-## 1. 功能需求
-
-| 编号 | 需求 | 状态 | 实现 / 测试 |
+| 阶段 | 核心交付 | 状态 | 关键实现与测试 |
 | --- | --- | --- | --- |
-| FR-01 | 项目 CRUD、暂停、归档、绑定仓库 | ✅ | `services/projects.ts`；`service.test.ts`；**无硬删除**，归档只读 |
-| FR-02 | GitHub App 绑定、installation、选仓库 | ✅ | `github/client.ts`、`routes/repo.ts`；Mock 模式服务测试；真实 App 需凭据联调 |
-| FR-03 | 成员、角色、邀请、移除 | ✅ 基本完成 | `services/projects.ts`、`invites.ts`；**无所有权转移** |
-| FR-04 | 邀请二维码、签名 token、过期/次数 | ✅ | `services/invites.ts`；`service.test.ts`、`group-join.test.ts` |
-| FR-05 | IM 群绑定、群内 `/bind`、扫码入群 | ✅ | `bindChannel`、dual intake、`services/group-join.ts`；**企业微信应用群**在项目详情页展示签名二维码，扫码 OAuth 后 `appchat/update` 自动入群；飞书同理；已有群二维码兜底 |
-| FR-06 | @bot 接单、命令、线程回复 | ✅ | 飞书走回调；企业微信走智能机器人长连接（`im/wecom-bot.ts`，自建 appchat 不能收群消息）；只处理成员 @bot；线程 Input 绕过 Eval |
-| FR-07 | 工单生命周期 | ✅ | `tickets.stage`：queued/working/plan_review/idle/review/blocked/failed/answer/done/cancelled；`dual-core.test.ts`、`service.test.ts` |
-| FR-08 | 队列、Worker、超时、重试、取消、日志 | ✅ | `session_turns`、`claimNextTurn`、`executeTurn`、`reapStaleTurns`、`turn_events`；测试覆盖失败重试与取消；Runtime 支持 fake/command/openai |
-| FR-09 | 分支、commit、PR、评论、CI | ✅（真实 API 待联调） | `dual/worker.ts` 交付 PR；`services/github-webhooks.ts`；Mock PR + merge/comment 路径 |
-| FR-10 | 计划审批、人工合并 | ✅ 基本完成 | 计划是 Executor Turn 的门：`plan_review` → approval Input → 下一 Turn；不自动合并 |
-| FR-11 | 接单/进度/PR/需人工/完成通知 | ✅ | `services/notifications.ts`、Outbox；服务测试校验 PR/done 通知 |
-| FR-12 | 全链路审计 | ✅ | `audit_logs` + trigger/evaluation/mandate/turn/report；`service.test.ts` |
-| FR-13 | 并发、每日 token、超时 | ✅ 基本完成 | Executor Turn 受 `maxConcurrentRuns`；入队检查每日预算；Turn 超时；无告警 |
-| FR-14 | `/status` `/cancel` `/retry` `/approve` `/bind` `/help` | ✅ | `dual/engine.handleCommand`；权限/暂停规则；命令测试 |
+| **Phase 0：内核收敛与生产护栏** | 删除 `server/src/dual/`，统一收敛到 `server/src/core/`；修复 Router ID 解析、LLM 路由记账、动态无仓/本地仓工作区、企微无线程命令回落；补齐并发上限、每日预算、心跳/取消监控、Stale Turn Reaper 与零门槛激活 | ✅ 已完成 | `core/worker/dispatcher.ts`、`reaper.ts`、`workspace-provider.ts`；`tests/core/phase0-guards.test.ts` |
+| **Phase 1：Bot Roster + Rooms + Handoff + SSE** | `bots`/`rooms`/`room_bots`/`room_messages` 表与迁移（0007）；4 角色产研模板（`@researcher/@pm/@engineer/@qa`）；Web 协作房间三栏界面与 SSE 实时围观；显式 `handoff` 工具（`maxHops` + 防自交接）；IM 双向同步与 `[Bot名 · 角色]` 签名 | ✅ 已完成 | `services/bots.ts`、`services/rooms.ts`、`services/events.ts`、`web/src/pages/project/RoomsTab.tsx`、`RosterTab.tsx`；`tests/core/phase1-bots-rooms-handoff.test.ts` |
+| **Phase 2：工具级审批 + Checkpoint 续跑 + 飞书卡片** | `action_approvals` 表与 `waiting_approval` 阶段（0008）；`evaluateToolPolicy` 三级策略门控；命中 `confirm` 持久化 `checkpoint` 释放 Worker，审批后 `kind='resume'` 续跑；Web 审批收件箱与飞书交互卡片（`/webhooks/feishu/card`） | ✅ 已完成 | `core/agent/gate.ts`、`services/approvals.ts`、`im/feishu.ts`、`web/src/pages/project/InboxTab.tsx`；`tests/core/phase2-approvals.test.ts` |
+| **Phase 3：持久沙箱 + 浏览器截图 + MCP 连接器** | `mcp_servers`/`artifacts` 表（0009）；`LocalProcessSandboxProvider` & `DockerSandboxProvider`（`deploy/bot-sandbox.Dockerfile`）+ `terminal_chunk` 流式事件；`BrowserToolRunner` 与鉴权产物下载接口；`McpClient`（Streamable HTTP/SSE/Stdio）与工具发现；Web Connectors 面板 | ✅ 已完成 | `core/sandbox/*`、`core/mcp/client.ts`、`services/connectors.ts`、`web/src/pages/project/ConnectorsTab.tsx`；`tests/core/phase3-sandbox-browser-mcp.test.ts` |
+| **Phase 4：7×24 Routines + Demo 与部署升级** | `routines` 表（0010）；零依赖 5 段 Cron 解析与时区调度；`tickRoutines`（`FOR UPDATE SKIP LOCKED`）与 `repo_event` Webhook 触发；「无事不扰」静默归档策略；Web Routines 管理与立即试跑；Demo / Compose / 文档全量升级 | ✅ 已完成 | `core/routines/cron.ts`、`scheduler.ts`、`services/routines.ts`、`web/src/pages/project/RoutinesTab.tsx`；`tests/core/phase4-routines.test.ts` |
 
-## 2. 非功能需求
+## 2. 安全边界与治理
 
-| 类别 | 要求 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| 隔离 | project_id；每工单目录；不跨项目 | ✅ / 部分 | 应用层强制 + 测试；Worker 容器隔离；未实现“每 Turn 一个容器” |
-| 安全 | 短期 GitHub token、密钥、不可信输入 | ✅ | installation token 只留在 Worker；Agent 进程不注入；验签/限流/CSRF；日志脱敏 |
-| 性能 | 回执 <5s；30 分钟出 PR；队列可观测 | ✅ 设计满足 | Webhook 只入库+入队；Outbox 1s；Executor 速度取决于 Runtime；`/metrics` |
-| 可用性 | Webhook/队列重试、备份 | ✅ / 部分 | 投递幂等、Turn 重试/回收、Outbox 退避；备份为文档操作 |
-| 成本 | 预算、超时、全局并发 | ✅ | 预算入队检查、Turn 超时、Worker 并发 |
-| 可观测 | trace、日志、指标、审计分离 | ✅ 基本完成 | pino + turn/project/ticket 绑定；`/metrics`；未接 OpenTelemetry |
-| 合规 | 保留期、删除项目 | ⚠️ 部分 | 级联删除；**消息/审计定时清理未实现** |
+- **多租户隔离**：所有 API、Room、审批单、MCP 服务器、Artifacts 与 Routines 均按 `project_id` 强制鉴权隔离。
+- **Suggest, don't send**：高风险内置工具与外部 MCP 写入/外发工具默认进入人工审批队列（Web 审批收件箱 + 飞书交互卡片），只读工具自动放行。
+- **代码仓库保护**：Executor 禁止执行 `git push`、`gh pr` 或修改 remote；分支推送与 PR 创建全部由平台交付层统一完成，永不自动合并。
+- **沙箱隔离**：Docker 模式为每个 Bot 分配独立持久容器与 `/home/bot` 卷，默认启用 `--cap-drop=ALL`、`--security-opt=no-new-privileges` 与内存/CPU 限额。
 
-## 3. 验收标准
+## 3. V2 预留扩展点
 
-| # | 标准 | 结果 | 证据 |
-| --- | --- | --- | --- |
-| 1 | 创建项目、绑定仓库/群、生成二维码 | ✅ | `service.test.ts` 认证/邀请流程 |
-| 2 | 扫码登录加入项目，看到项目入口 | ✅ | 邀请接受 + 群入口；**企业微信应用群**扫码后自动加入项目与群（`wecom-join.test.ts`），已有群退回二维码/链接 |
-| 3 | @bot 5 秒内回执并生成 Ticket | ✅ | Webhook 只做确定性入库；Main Turn 异步执行；Outbox 1s |
-| 4 | Executor 完成修改并开 PR，群里收到链接 | ✅ | `service.test.ts` console ticket → review；Feishu 测试 → review |
-| 5 | 非成员/非 @/其他群不建单 | ✅ | dual-core、service Feishu 测试 |
-| 6 | webhook 重放不重复建单 | ✅ | Feishu/WeCom/GitHub 三重去重测试 |
-| 7 | 线程追问追加同一 Ticket | ✅ | dual-core、service Feishu 线程测试；无新 Eval |
-| 8 | Maintainer 暂停、取消、重试、批准 | ✅ | service 审批/停止/失败重试测试 |
-| 9 | PR 合并后 Ticket 关闭并通知 | ✅ | service GitHub merge webhook |
-| 10 | 审计还原触发→决策→执行→PR→审批 | ✅ 基本完成 | audit + trigger/evaluation/mandate/report/turn |
-| 11 | 项目 A 不能读项目 B | ✅ | service 项目隔离测试 |
-| 12 | 容器不能读宿主密钥/未授权网络 | ⚠️ 部署约束 | Dockerfile 非 root、无宿主挂载/Docker socket；网络白名单需宿主策略 |
-
-## 4. 测试清单
-
-| 文件 | 覆盖 |
-| --- | --- |
-| `tests/dual-core.test.ts` | Main eval → Decision → Ticket/Mandate → Executor report；计划门；线程 Input/恢复；去重；停止/关闭 |
-| `tests/service.test.ts` | API 认证/隔离/角色/邀请；工单 → Executor → PR → merge；审批/取消/失败重试；Feishu Eval/线程/命令；会话/报告 DTO |
-| `tests/wecom-service.test.ts` | 企业微信加密回调 → Eval → Ticket；重放去重；`/status` |
-| `tests/wecom.test.ts` | 企微加解密、验签、echostr、OAuth、群机器人/appchat 发送与拉人 |
-| `tests/group-join.test.ts` | 项目群二维码/链接；飞书/企微自建群自动拉群；默认关闭与失败回落 |
-| `tests/wecom-join.test.ts` | 创建 appchat 应用群、项目详情页签名二维码、扫码 OAuth 后自动入群、API 路由、篡改/缺凭据处理 |
-| `tests/wecom-bot.test.ts` | 企业微信智能机器人帧归一化：群 @、命令、混排、单聊、坏帧 |
-| `tests/openai-runtime.test.ts` | OpenAI-compatible Runtime：Main 决策 JSON、Executor 工具循环、路径逃逸拒绝、用量统计 |
-| `tests/feishu.test.ts` | 飞书加解密、验签、URL 验证、发送、OAuth |
-| `tests/intake.test.ts` | 命令解析与 Mention Router 纯函数 |
-| `tests/github.test.ts` | GitHub webhook 签名、Mock App |
-| `tests/db.test.ts` | 迁移与 schema |
-
-## 5. 与原型 / 方案的差异
-
-| 原型或方案 | 当前实现 | 原因 |
-| --- | --- | --- |
-| Main Session 有 14 个工具 | Main 每 Turn 返回 `decisions` JSON；命令是服务层确定性动作 | 收窄 MVP，协议可扩展成工具调用 |
-| Executor 自己 push/PR | 平台 commit/push/PR | 仓库保护、最小权限、可审计 |
-| 推断候选 / bot 名单 / admission | 只处理成员 @bot | `DEVELOPMENT_PLAN.md` 的 @ 版 |
-| 多 PR、上下文订阅、subagent、后台 job | 未实现 | 后续里程碑 |
-| DSH 原生 Session | `TurnRuntime` + transcript + `result.json`；DSH 由命令包装器接入 | 服务可替换 Runtime、便于多项目 |
-| 每 Run 一个容器 | 每工单持久目录 + Worker 容器 | 单机 Compose 简化 |
-| 企业微信普通群 @ 机器人 | 用 appchat 应用群做扫码入群，再用智能机器人长连接接收 @；机器人需群主手动加入一次 | 自建应用不收群消息，官方无自动拉机器人 API |
-
-## 6. 已知限制
-
-1. **真实 DSH/GitHub/IM 未在本机联调**：使用 Fake Runtime、Mock GitHub、模拟 appchat 与合成加密报文验证协议；真实凭据需按部署文档配置，智能机器人 userid 映射需在真实企业确认。直连 LLM 的 `run_command` 是真实 shell，生产必须把 Worker 放进隔离容器，不能挂载平台 `.env`/宿主目录。
-2. **企业微信无原生线程**：智能机器人只推送群内 @ 消息，追问也需要 @；用 `/status` 等命令或控制台。
-3. **企业微信自动拉群仅 `appchat` 自建群**；群内 @ 需要额外配置智能机器人，并由群主手动把机器人加入群一次（官方未开放自动拉机器人 API）。已有群只能二维码/链接。智能机器人回调的 `from.userid` 可能是加密 ID，当前未实现明文映射；联调前需确认与 OAuth userid 一致。
-4. **无自动建群**：邀请是项目邀请；群由团队创建后绑定。
-5. **单 PR、无上下文订阅**：PR 评论会作为 Input 续跑，但未跟踪多 PR 或 context follow。
-6. **数据保留清理、RLS、MinIO、OTel 告警未实现**。
-7. **所有权转移缺失**。
-8. **内联 Worker 仅开发环境**：生产必须独立 Worker；`INLINE_WORKER` 在 production 会拒绝启动。
-9. **Docker 未在本机执行**：Compose/Dockerfile 提供但需首次部署验证。
-10. **控制台轮询**：工单活跃时 5 秒拉取，无 WebSocket。
-
-## 7. 后续里程碑
-
-- **M0 真实联调**：飞书/企微回调、GitHub App、DSH headless；
-- **M1 补齐内核**：拒绝审批、多 PR 跟踪、context 订阅、Policy 重校验、prompt 版本；
-- **M2 产品化**：所有权转移、保留期清理、RLS、MinIO、OTel、告警；
-- **M3 扩展**：推断候选/LLM Router、每 Turn 容器化。
+- **noVNC 桌面实时接管**：`SandboxProvider.getVncSession()` 接口已在 V1 预留。
+- **跨会话长期 Memory 与 Skills 技能市场**：将在 V2 结合向量检索与可复用 Skill 包实现。
+- **每 Bot 独立 IM 凭据**：`bots.im_binding` JSONB 字段已落库，支持平滑从单机器人签名模式升级到独立应用机器人。

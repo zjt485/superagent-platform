@@ -1,6 +1,7 @@
 import { and, desc, eq } from 'drizzle-orm'
 import type { CoreContext } from '../core/operations.js'
 import { deliverTicketInput, markTicketClosed, markTicketMerged } from '../core/operations.js'
+import { triggerEventRoutines } from '../core/routines/scheduler.js'
 import { audit } from './audit.js'
 import { newId } from '../domain/ids.js'
 import { messages, projects, repos, tickets, type ProjectRow, type TicketRow } from '../db/schema.js'
@@ -79,6 +80,36 @@ export async function handleGithubWebhook(
   deliveryId: string,
 ): Promise<{ handled: string }> {
   const action = typeof payload.action === 'string' ? payload.action : ''
+  const repoFullName =
+    typeof asRecord(payload.repository).full_name === 'string' ? (asRecord(payload.repository).full_name as string) : ''
+  if (repoFullName && (event === 'push' || (event === 'pull_request' && (action === 'opened' || action === 'synchronize')))) {
+    const [boundRepo] = await ctx.db.select().from(repos).where(eq(repos.fullName, repoFullName))
+    if (boundRepo) {
+      const ref =
+        event === 'push'
+          ? String(payload.ref ?? '').replace(/^refs\/heads\//, '')
+          : String(asRecord(asRecord(payload.pull_request).base).ref ?? '')
+      const summary =
+        event === 'push'
+          ? `仓库 ${repoFullName} 分支 ${ref || 'unknown'} 收到新推送`
+          : `PR #${String(asRecord(payload.pull_request).number ?? '')} ${action}: ${String(asRecord(payload.pull_request).title ?? '')}`
+      const triggered = await triggerEventRoutines({
+        db: ctx.db,
+        projectId: boundRepo.projectId,
+        triggerType: 'repo_event',
+        eventType: event,
+        branch: ref || null,
+        deliveryId,
+        summary,
+        now: ctx.now(),
+        ...(ctx.events ? { events: ctx.events } : {}),
+      })
+      if (event === 'push') {
+        return { handled: triggered.triggered > 0 ? 'routine-triggered' : 'ignored' }
+      }
+    }
+  }
+
   if (event === 'pull_request') {
     const pr = asRecord(payload.pull_request)
     const ticket = await findTicket(ctx, payload, pr)

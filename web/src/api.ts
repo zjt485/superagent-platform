@@ -540,6 +540,33 @@ export interface ArtifactItem {
   createdAt: string
 }
 
+export interface Routine {
+  id: string
+  projectId: string
+  botId: string | null
+  roomId: string | null
+  name: string
+  description: string | null
+  enabled: boolean
+  triggerType: 'cron' | 'webhook' | 'repo_event'
+  cronExpr: string | null
+  timezone: string
+  eventFilter: { events?: string[]; branches?: string[] }
+  prompt: string
+  notifyOnQuiet: boolean
+  maxBudgetUsd: number
+  nextRunAt: string | null
+  lastRunAt: string | null
+  lastStatus: string | null
+  lastTicketId: string | null
+  botName: string | null
+  botSlug: string | null
+  botAvatar: string | null
+  roomName: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -763,5 +790,35 @@ export const api = {
       request<{ items: ArtifactItem[] }>(`/v1/projects/${projectId}/artifacts?limit=${limit}`),
     url: (projectId: string, artifactId: string) =>
       `/v1/projects/${projectId}/artifacts/${artifactId}`,
+  },
+
+  routines: {
+    list: (projectId: string) => request<{ items: Routine[] }>(`/v1/projects/${projectId}/routines`),
+    create: (
+      projectId: string,
+      body: {
+        name: string
+        description?: string | null
+        botId?: string | null
+        roomId?: string | null
+        enabled?: boolean
+        triggerType?: Routine['triggerType']
+        cronExpr?: string | null
+        timezone?: string
+        eventFilter?: Routine['eventFilter']
+        prompt: string
+        notifyOnQuiet?: boolean
+        maxBudgetUsd?: number
+      },
+    ) => request<{ routine: Routine }>(`/v1/projects/${projectId}/routines`, { method: 'POST', ...json(body) }),
+    update: (projectId: string, routineId: string, body: Partial<Routine>) =>
+      request<{ routine: Routine }>(`/v1/projects/${projectId}/routines/${routineId}`, { method: 'PATCH', ...json(body) }),
+    remove: (projectId: string, routineId: string) =>
+      request<null>(`/v1/projects/${projectId}/routines/${routineId}`, { method: 'DELETE' }),
+    runNow: (projectId: string, routineId: string) =>
+      request<{ triggerId: string; routine: Routine }>(`/v1/projects/${projectId}/routines/${routineId}/run`, {
+        method: 'POST',
+        ...json({}),
+      }),
   },
 }

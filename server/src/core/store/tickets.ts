@@ -26,6 +26,7 @@ export interface NewTicket {
   handoffChainId?: string | null
   handoffHop?: number
   parentTicketId?: string | null
+  routineId?: string | null
   at: Date
 }
 
@@ -54,6 +55,7 @@ export async function insertTicket(db: Database, input: NewTicket): Promise<Tick
       handoffChainId: input.handoffChainId ?? null,
       handoffHop: input.handoffHop ?? 0,
       parentTicketId: input.parentTicketId ?? null,
+      routineId: input.routineId ?? null,
       createdAt: input.at,
       updatedAt: input.at,
     })

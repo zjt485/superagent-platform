@@ -7,6 +7,7 @@ import {
   mandates,
   outboxEvents,
   roomMessages,
+  routines,
   sessionTurns,
   ticketSubscriptions,
   tickets,
@@ -170,6 +171,12 @@ export async function applyRouterOutput(
           botSlug: item.botSlug,
         })
         const chainId = trigger.handoffChainId ?? newId()
+        const rawMeta = (trigger.raw && typeof trigger.raw === 'object' ? trigger.raw : {}) as {
+          routineId?: string
+          notifyOnQuiet?: boolean
+        }
+        const routineId = typeof rawMeta.routineId === 'string' && UUID_PATTERN.test(rawMeta.routineId) ? rawMeta.routineId : null
+        const quietRoutine = routineId !== null && rawMeta.notifyOnQuiet === false
         let shortName = nextShortName()
         let ticketId = newId()
         let created = false
@@ -183,6 +190,7 @@ export async function applyRouterOutput(
               botId: assignedBot?.id ?? null,
               handoffChainId: chainId,
               handoffHop: trigger.handoffHop ?? 0,
+              routineId,
               threadKey: input.threadKey,
               requesterId: trigger.actorUserId,
               requesterName: trigger.actorName,
@@ -204,6 +212,12 @@ export async function applyRouterOutput(
           }
         }
         if (!created) throw new RouterApplyError(`could not allocate a unique short name for ${trigger.id}`)
+        if (routineId !== null) {
+          await tx
+            .update(routines)
+            .set({ lastTicketId: ticketId, lastStatus: 'running', updatedAt: input.at })
+            .where(eq(routines.id, routineId))
+        }
 
         await tx.insert(mandates).values({
           id: newId(),
@@ -253,7 +267,7 @@ export async function applyRouterOutput(
           at: input.at,
         })
         const ackBody = `已接单：${title}（${shortName}）`
-        if (input.channelId !== null) {
+        if (input.channelId !== null && !quietRoutine) {
           await tx
             .insert(outboxEvents)
             .values({

@@ -8,6 +8,7 @@ import { OverviewTab } from './project/OverviewTab'
 import { RoomsTab } from './project/RoomsTab'
 import { RosterTab } from './project/RosterTab'
 import { InboxTab } from './project/InboxTab'
+import { RoutinesTab } from './project/RoutinesTab'
 import { ConnectorsTab } from './project/ConnectorsTab'
 import { MainSessionTab } from './project/MainSessionTab'
 import { TicketsTab } from './project/TicketsTab'
@@ -19,13 +20,14 @@ import { SettingsTab } from './project/SettingsTab'
 import { AuditTab } from './project/AuditTab'
 import { UsageTab } from './project/UsageTab'
 
-const TAB_KEYS = ['rooms', 'roster', 'inbox', 'connectors', 'overview', 'tickets', 'session', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
+const TAB_KEYS = ['rooms', 'roster', 'inbox', 'routines', 'connectors', 'overview', 'tickets', 'session', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
   rooms: '协作房间',
   roster: 'Bot 团队',
   inbox: '审批收件箱',
+  routines: '定时巡检',
   connectors: '连接器',
   overview: '概览',
   tickets: '工单',
@@ -183,6 +185,7 @@ export function ProjectPage() {
       {tab === 'rooms' ? <RoomsTab {...tabProps} /> : null}
       {tab === 'roster' ? <RosterTab {...tabProps} /> : null}
       {tab === 'inbox' ? <InboxTab {...tabProps} /> : null}
+      {tab === 'routines' ? <RoutinesTab {...tabProps} /> : null}
       {tab === 'connectors' ? <ConnectorsTab {...tabProps} /> : null}
       {tab === 'overview' ? <OverviewTab {...tabProps} /> : null}
       {tab === 'session' ? <MainSessionTab {...tabProps} /> : null}

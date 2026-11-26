@@ -8,11 +8,16 @@ import { MockGithubClient } from './github/client.js'
 import { buildApp } from './app/build.js'
 import type { AppContext } from './app/context.js'
 import { loginWithIdentity } from './services/auth.js'
+import { installRdBotTemplates } from './services/bots.js'
 import { addMemberByUserId, bindChannel, bindRepo, createProject } from './services/projects.js'
 import { createInvite } from './services/invites.js'
+import { createRoutine } from './services/routines.js'
+import { appendRoomMessage, ensureDefaultGroupRoom } from './services/rooms.js'
 import { createManagedWecomGroup } from './services/wecom-join.js'
 import { flushOutbox } from './services/outbox.js'
 import { receiveCoreTrigger } from './core/intake.js'
+import { McpClient } from './core/mcp/client.js'
+import { createSandboxProvider } from './core/sandbox/docker.js'
 import { coreTick } from './core/worker/tick.js'
 import { dispatchOnce } from './core/worker/dispatcher.js'
 import { startCoreLoop } from './core/worker/loop.js'
@@ -151,12 +156,39 @@ if (existingProjects.length === 0) {
 
   const project = await createProject(ctx, alice, {
     name: '演示项目',
-    description: '由 pnpm demo 创建：Core Router 路由接单，Executor 执行并开 PR，人工合并。',
+    description: '由 pnpm demo 创建：4 人产研数字员工团队（@researcher/@pm/@engineer/@qa）、协作房间、工具级审批与 7×24 巡检。',
   })
   await bindRepo(ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world', defaultBranch: 'main' })
   await bindChannel(ctx, project.id, alice, { provider: 'feishu', externalChatId: 'oc_demo_project', name: '演示项目群' })
   const [channel] = await handle.db.select().from(channels).where(and(eq(channels.projectId, project.id), eq(channels.status, 'active')))
   await addMemberByUserId(ctx, project.id, alice, { userId: bob.id, role: 'member' })
+
+  // Seed the 4-role R&D Bot squad, bind default Room to channel, and configure a QA daily Routine.
+  const installedBots = await installRdBotTemplates(ctx, project.id, alice)
+  const room = await ensureDefaultGroupRoom(handle.db, project.id, new Date(), channel?.id ?? null)
+  const engineerBot = installedBots.items.find((b) => b.slug === 'engineer') ?? null
+  const qaBot = installedBots.items.find((b) => b.slug === 'qa') ?? null
+  await appendRoomMessage(handle.db, {
+    projectId: project.id,
+    roomId: room.id,
+    threadKey: `room:${room.id}`,
+    authorKind: 'system',
+    kind: 'status',
+    content: '产研数字员工团队已入驻本房间：@researcher（调研）、@pm（产品）、@engineer（全栈开发）、@qa（测试巡检）。直接描述需求或 @点名即可开始协作。',
+    syncToIm: false,
+    at: new Date(),
+  })
+  await createRoutine(ctx, project.id, alice, {
+    name: '每日 09:00 QA 回归与依赖巡检',
+    description: '自动检查最新主分支测试与依赖健康度，无异常时静默归档，发现异常时通知群成员。',
+    botId: qaBot?.id ?? null,
+    roomId: room.id,
+    triggerType: 'cron',
+    cronExpr: '0 9 * * 1-5',
+    timezone: 'Asia/Shanghai',
+    prompt: '请运行项目核心测试并检查构建状态；如全部通过请在总结中注明「一切正常」，如发现失败用例请定位原因并 @engineer。',
+    notifyOnQuiet: false,
+  })
 
   const wecomProject = await createProject(ctx, alice, {
     name: '企微扫码演示',
@@ -170,6 +202,8 @@ if (existingProjects.length === 0) {
   await receiveCoreTrigger(handle.db, {
     projectId: project.id,
     channelId: channel?.id ?? null,
+    roomId: room.id,
+    targetBotId: engineerBot?.id ?? null,
     provider: 'feishu',
     externalId: 'demo_trigger_1',
     threadKey: 'demo_thread_1',
@@ -178,7 +212,7 @@ if (existingProjects.length === 0) {
     actorName: 'Alice',
     mentionedBot: true,
     address: 'mention',
-    text: '在 docs 下新增欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
+    text: '@engineer 在 docs 下新增欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
     at: new Date(),
   })
 
@@ -232,6 +266,10 @@ const demoLoop = startCoreLoop({
   executor,
   workspace,
   delivery,
+  sandbox: createSandboxProvider({ rootDir: config.WORKSPACES_DIR, defaultDockerImage: config.SANDBOX_IMAGE }),
+  mcpClient: new McpClient(),
+  artifactsRoot: config.WORKSPACES_DIR,
+  events: deps.events,
   now: () => new Date(),
   intervalMs: 500,
   log,

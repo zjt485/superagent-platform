@@ -14,6 +14,7 @@ import {
   projects,
   reports,
   rooms,
+  routines,
   sessionMessages,
   sessionTurns,
   tickets,
@@ -832,6 +833,26 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       : `[${ticket.shortName ?? ticket.id}] ${report.status}`
   const reportText = handoffNotice ? `${baseText}\n\n⚠️ ${handoffNotice}` : baseText
 
+  let suppressQuietIm = false
+  if (ticket.routineId) {
+    const [routineRow] = await options.db.select().from(routines).where(eq(routines.id, ticket.routineId))
+    if (routineRow) {
+      await options.db
+        .update(routines)
+        .set({ lastStatus: report.status, lastTicketId: ticket.id, updatedAt: finishedAt })
+        .where(eq(routines.id, routineRow.id))
+      const looksClean =
+        report.status !== 'failed' &&
+        report.status !== 'blocked' &&
+        !report.prUrl &&
+        !handoffNotice &&
+        (report.status === 'waiting' || /一切正常|无异常|no issues|all green|clean/i.test(report.summary))
+      if (!routineRow.notifyOnQuiet && looksClean) {
+        suppressQuietIm = true
+      }
+    }
+  }
+
   if (ticket.roomId) {
     await appendRoomMessage(options.db, {
       projectId: project.id,
@@ -850,7 +871,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     })
   }
 
-  if (ticket.channelId !== null) {
+  if (ticket.channelId !== null && !suppressQuietIm) {
     await options.db
       .insert(outboxEvents)
       .values({

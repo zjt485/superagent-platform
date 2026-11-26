@@ -82,6 +82,12 @@ export const roomKindEnum = pgEnum('room_kind', ['group', 'dm', 'routine_feed'])
 export const roomStatusEnum = pgEnum('room_status', ['active', 'archived'])
 export const roomAuthorKindEnum = pgEnum('room_author_kind', ['user', 'bot', 'system'])
 export const roomMessageKindEnum = pgEnum('room_message_kind', ['chat', 'handoff', 'status', 'approval_card', 'artifact', 'report'])
+export const routineTriggerTypeEnum = pgEnum('routine_trigger_type', ['cron', 'webhook', 'repo_event'])
+
+export interface RoutineEventFilter {
+  events?: string[]
+  branches?: string[]
+}
 
 export interface BotModelConfig {
   baseUrl?: string
@@ -343,6 +349,7 @@ export const tickets = pgTable(
     handoffChainId: uuid('handoff_chain_id'),
     handoffHop: integer('handoff_hop').notNull().default(0),
     parentTicketId: uuid('parent_ticket_id'),
+    routineId: uuid('routine_id'),
 
     createdAt,
     updatedAt,
@@ -1024,6 +1031,38 @@ export const artifacts = pgTable(
   (table) => [index('artifacts_project_time_idx').on(table.projectId, table.createdAt)],
 )
 
+export const routines = pgTable(
+  'routines',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    botId: uuid('bot_id').references(() => bots.id, { onDelete: 'set null' }),
+    roomId: uuid('room_id').references(() => rooms.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    description: text('description'),
+    enabled: boolean('enabled').notNull().default(true),
+    triggerType: routineTriggerTypeEnum('trigger_type').notNull().default('cron'),
+    cronExpr: text('cron_expr'),
+    timezone: text('timezone').notNull().default('Asia/Shanghai'),
+    eventFilter: jsonb('event_filter').$type<RoutineEventFilter>().notNull().default({}),
+    prompt: text('prompt').notNull(),
+    notifyOnQuiet: boolean('notify_on_quiet').notNull().default(false),
+    maxBudgetUsd: numeric('max_budget_usd', { precision: 10, scale: 4, mode: 'number' }).notNull().default(1),
+    nextRunAt: timestamp('next_run_at', { withTimezone: true, mode: 'date' }),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true, mode: 'date' }),
+    lastStatus: text('last_status'),
+    lastTicketId: uuid('last_ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index('routines_due_idx').on(table.enabled, table.triggerType, table.nextRunAt),
+    index('routines_project_idx').on(table.projectId, table.createdAt),
+  ],
+)
+
 export const schema = {
   users,
   identities,
@@ -1062,6 +1101,7 @@ export const schema = {
   actionApprovals,
   mcpServers,
   artifacts,
+  routines,
 }
 
 export type Schema = typeof schema
@@ -1086,3 +1126,4 @@ export type RoomMessageRow = typeof roomMessages.$inferSelect
 export type ActionApprovalRow = typeof actionApprovals.$inferSelect
 export type McpServerRow = typeof mcpServers.$inferSelect
 export type ArtifactRow = typeof artifacts.$inferSelect
+export type RoutineRow = typeof routines.$inferSelect

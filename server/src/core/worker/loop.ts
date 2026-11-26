@@ -3,6 +3,7 @@ import type { Logger } from '../../logger.js'
 import type { ProjectEventBus } from '../../services/events.js'
 import type { McpClient } from '../mcp/client.js'
 import type { RouterModel } from '../router/model.js'
+import { tickRoutines } from '../routines/scheduler.js'
 import type { SandboxProvider } from '../sandbox/provider.js'
 import { dispatchOnce } from './dispatcher.js'
 import type { DeliveryProvider } from './delivery.js'
@@ -20,6 +21,7 @@ export interface CoreLoopOptions {
   maxRounds?: number
   leaseSeconds?: number
   reapIntervalMs?: number
+  routineIntervalMs?: number
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
   sandbox?: SandboxProvider
@@ -44,7 +46,9 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
   let completed = false
   const intervalMs = options.intervalMs ?? 1000
   const reapIntervalMs = options.reapIntervalMs ?? 30_000
+  const routineIntervalMs = options.routineIntervalMs ?? 15_000
   let lastReapAt = 0
+  let lastRoutineAt = 0
 
   const loop = async (): Promise<void> => {
     while (!stopping) {
@@ -53,6 +57,14 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
         if (options.leaseSeconds !== undefined && nowMs - lastReapAt >= reapIntervalMs) {
           lastReapAt = nowMs
           await reapStaleCoreTurns({ db: options.db, now: options.now, leaseSeconds: options.leaseSeconds })
+        }
+        if (nowMs - lastRoutineAt >= routineIntervalMs) {
+          lastRoutineAt = nowMs
+          await tickRoutines({
+            db: options.db,
+            now: options.now,
+            ...(options.events ? { events: options.events } : {}),
+          })
         }
         const routed = await coreTick({ db: options.db, model: options.model, now: options.now, maxThreads: 10 })
         let dispatched = 0

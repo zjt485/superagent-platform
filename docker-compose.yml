@@ -63,7 +63,10 @@ services:
 
   worker:
     <<: *app
-    command: ["node", "dist/worker-main.js"]
+    # Unified core Router + Executor + Routines worker.
+    # For per-Bot Docker sandbox mode (`sandboxConfig.mode = 'docker'`), first build:
+    #   docker build -f deploy/bot-sandbox.Dockerfile -t superagent-bot-sandbox:latest .
+    command: ["node", "dist/core-worker-main.js"]
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
@@ -72,6 +75,8 @@ services:
       REDIS_URL: redis://redis:6379
       QUEUE_DRIVER: redis
       WORKSPACES_DIR: /data/workspaces
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-superagent-bot-sandbox:latest}
+      CORE_ROUTER: ${CORE_ROUTER:-rule}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
     volumes:
       - workspaces:/data/workspaces

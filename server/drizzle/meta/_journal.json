@@ -71,6 +71,13 @@
       "when": 1795650000000,
       "tag": "0009_mcp_and_sandbox",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795651000000,
+      "tag": "0010_routines",
+      "breakpoints": true
     }
   ]
 }
