@@ -1,11 +1,21 @@
 import type { InboundEvent } from './message.js'
 import type { ChannelProvider } from './status.js'
 
+export interface MessageCard {
+  title: string
+  body: string
+  url?: string
+  approvalId?: string
+  projectId?: string
+  riskLevel?: 'medium' | 'high'
+  status?: 'pending' | 'approved' | 'rejected' | 'revision_requested'
+}
+
 export interface SendMessageInput {
   chatId: string
   text: string
   replyToMessageId?: string
-  card?: { title: string; body: string; url?: string }
+  card?: MessageCard
   /** Channel-specific settings, e.g. a WeCom group-robot webhook URL. */
   channelConfig?: Record<string, unknown>
 }
@@ -50,6 +60,8 @@ export interface ImAdapter {
    * real "scan to join" experience.
    */
   createChat?(input: { name: string; ownerUserId: string; userIds: string[] }): Promise<{ chatId: string }>
+  /** Optional: update an interactive card in place (Feishu PATCH message). */
+  updateCard?(messageId: string, card: MessageCard): Promise<void>
 }
 
 export type ImRegistry = Partial<Record<ChannelProvider, ImAdapter>>

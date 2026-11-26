@@ -1,5 +1,5 @@
 import type { TurnRuntime, TurnRuntimeInput } from '../agent/types.js'
-import type { Report, ReportStatus } from '../domain/types.js'
+import type { ApprovalRequestPayload, Report, ReportStatus } from '../domain/types.js'
 import type { Executor, TurnContext } from './executor.js'
 
 const REPORT_STATUSES: ReadonlySet<string> = new Set([
@@ -41,6 +41,16 @@ export function reportFromRuntime(output: unknown, tokens: number, cost: number)
         }
       : undefined
 
+  const rawApproval = isRecord(record.approvalRequest) ? record.approvalRequest : null
+  const approvalRequest =
+    rawApproval &&
+    typeof rawApproval.toolName === 'string' &&
+    typeof rawApproval.toolCallId === 'string' &&
+    typeof rawApproval.title === 'string' &&
+    isRecord(rawApproval.checkpoint)
+      ? (rawApproval as unknown as ApprovalRequestPayload)
+      : undefined
+
   return {
     status,
     summary,
@@ -52,6 +62,7 @@ export function reportFromRuntime(output: unknown, tokens: number, cost: number)
     ...(stringOrUndefined(record.prUrl) === undefined ? {} : { prUrl: stringOrUndefined(record.prUrl) }),
     ...(changedFiles === undefined ? {} : { changedFiles }),
     ...(handoff === undefined ? {} : { handoff }),
+    ...(approvalRequest === undefined ? {} : { approvalRequest }),
     tokens,
     cost,
     raw: output,
@@ -84,6 +95,8 @@ export class RuntimeExecutor implements Executor {
         workspace: context.worktreePath,
         prompt: context.prompt,
         packet: context.packet,
+        ...(context.toolPolicy === undefined ? {} : { toolPolicy: context.toolPolicy }),
+        ...(context.resumeFrom === undefined ? {} : { resumeFrom: context.resumeFrom }),
         timeoutMs: context.timeoutMs,
         signal: controller.signal,
         env: context.env ?? {},

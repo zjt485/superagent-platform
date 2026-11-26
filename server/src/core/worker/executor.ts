@@ -1,4 +1,5 @@
-import type { ExecutorTurnPacket } from '../agent/types.js'
+import type { BotToolPolicy } from '../../db/schema.js'
+import type { ExecutorTurnPacket, TurnResumeInput } from '../agent/types.js'
 import type { Report } from '../domain/types.js'
 
 export interface TurnContext {
@@ -18,6 +19,8 @@ export interface TurnContext {
   model: string | null
   prompt: string
   packet: ExecutorTurnPacket
+  toolPolicy?: BotToolPolicy
+  resumeFrom?: TurnResumeInput
   timeoutMs: number
   signal?: AbortSignal
   env?: Record<string, string>

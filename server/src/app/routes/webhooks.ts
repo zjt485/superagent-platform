@@ -1,7 +1,12 @@
+import { and, eq } from 'drizzle-orm'
 import type { FastifyInstance } from 'fastify'
 import type { AppContext } from '../context.js'
 import { forgetDelivery, ingestInboundEvent, registerDelivery } from '../../services/intake.js'
 import { handleGithubWebhook } from '../../services/github-webhooks.js'
+import { decideActionApproval } from '../../services/approvals.js'
+import { buildFeishuInteractiveCard } from '../../im/feishu.js'
+import { constantTimeEqual } from '../../security/tokens.js'
+import { identities, users } from '../../db/schema.js'
 import { verifyGithubSignature } from '../../github/verify.js'
 import { audit } from '../../services/audit.js'
 import { AppError, badRequest, unauthorized } from '../../errors.js'
@@ -41,6 +46,45 @@ export function registerWebhookRoutes(app: FastifyInstance, ctx: AppContext): vo
     }
     reply.code(200)
     return { code: 0, processed }
+  })
+
+  /** Feishu interactive card button callback (approve / reject directly from chat). */
+  app.post('/webhooks/feishu/card', { config: limitConfig }, async (request) => {
+    const payload = (request.body && typeof request.body === 'object' ? request.body : {}) as Record<string, unknown>
+    if (ctx.config.FEISHU_VERIFICATION_TOKEN) {
+      const token = typeof payload.token === 'string' ? payload.token : ''
+      if (!token || !constantTimeEqual(token, ctx.config.FEISHU_VERIFICATION_TOKEN)) {
+        throw unauthorized('飞书卡片回调 token 无效')
+      }
+    }
+    if (payload.type === 'url_verification' && typeof payload.challenge === 'string') {
+      return { challenge: payload.challenge }
+    }
+    const openId = typeof payload.open_id === 'string' ? payload.open_id : ''
+    const action = (payload.action && typeof payload.action === 'object' ? payload.action : {}) as Record<string, unknown>
+    const value = (action.value && typeof action.value === 'object' ? action.value : {}) as Record<string, unknown>
+    if (value.action !== 'approval' || typeof value.projectId !== 'string' || typeof value.approvalId !== 'string') {
+      return { toast: { type: 'info', content: '未识别的卡片动作' } }
+    }
+    const decision = value.decision === 'approved' ? 'approved' : value.decision === 'rejected' ? 'rejected' : null
+    if (!decision) return { toast: { type: 'error', content: '非法审批动作' } }
+
+    const [identity] = await ctx.db
+      .select({ user: users })
+      .from(identities)
+      .innerJoin(users, eq(users.id, identities.userId))
+      .where(and(eq(identities.provider, 'feishu'), eq(identities.externalId, openId)))
+    if (!identity) {
+      return { toast: { type: 'error', content: '请先使用飞书登录 Superagent 控制台关联身份' } }
+    }
+
+    const result = await decideActionApproval(ctx, value.projectId, value.approvalId, identity.user, { decision })
+    return buildFeishuInteractiveCard({
+      title: `${result.approval.title}（${decision === 'approved' ? '已批准' : '已拒绝'}）`,
+      body: `已由 **${identity.user.name}** 处理，Bot 正在从断点继续执行。`,
+      status: decision,
+      url: `${ctx.config.PUBLIC_BASE_URL}/projects/${value.projectId}?tab=inbox`,
+    })
   })
 
   app.get('/webhooks/wecom', { config: limitConfig }, async (request, reply) => {

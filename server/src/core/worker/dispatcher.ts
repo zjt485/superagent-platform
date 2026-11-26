@@ -1,9 +1,10 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { and, asc, count, desc, eq, isNotNull, sql } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
 import {
+  actionApprovals,
   agentSessions,
   auditLogs,
   bots,
@@ -21,10 +22,11 @@ import {
   type ProjectRow,
   type TicketInputRow,
   type TicketRow,
+  type TurnCheckpoint,
   type TurnRow,
 } from '../../db/schema.js'
 import { buildExecutorPrompt } from '../agent/prompts.js'
-import type { ExecutorBotPersona, ExecutorTurnPacket } from '../agent/types.js'
+import type { ExecutorBotPersona, ExecutorTurnPacket, TurnResumeInput } from '../agent/types.js'
 import { newId } from '../../domain/ids.js'
 import { parsePolicy } from '../../domain/policy.js'
 import { formatBotSignature } from '../../services/bots.js'
@@ -64,7 +66,7 @@ async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefine
       .where(
         and(
           eq(sessionTurns.status, 'queued'),
-          eq(sessionTurns.kind, 'execute'),
+          inArray(sessionTurns.kind, ['execute', 'resume']),
           isNotNull(sessionTurns.ticketId),
         ),
       )
@@ -101,7 +103,7 @@ async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefine
             .where(
               and(
                 eq(sessionTurns.projectId, project.id),
-                eq(sessionTurns.kind, 'execute'),
+                inArray(sessionTurns.kind, ['execute', 'resume']),
                 eq(sessionTurns.status, 'running'),
               ),
             )
@@ -384,6 +386,18 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       .catch(() => {})
   }, 1500)
 
+  let resumeFrom: TurnResumeInput | undefined
+  if (turn.kind === 'resume' && turn.input && typeof turn.input === 'object') {
+    const meta = turn.input as { sourceTurnId?: string; decision?: string; comment?: string | null }
+    if (typeof meta.sourceTurnId === 'string') {
+      const [sourceTurn] = await options.db.select().from(sessionTurns).where(eq(sessionTurns.id, meta.sourceTurnId))
+      const checkpoint = sourceTurn?.checkpoint as TurnCheckpoint | null | undefined
+      if (checkpoint && (meta.decision === 'approved' || meta.decision === 'rejected' || meta.decision === 'revision_requested')) {
+        resumeFrom = { checkpoint, decision: meta.decision, comment: meta.comment ?? null }
+      }
+    }
+  }
+
   let report: Report
   let cancelled = false
   try {
@@ -401,9 +415,11 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       worktreePath,
       transcriptPath,
       inputs: inputs.map((input) => input.text),
-      model: turn.model ?? null,
+      model: turn.model ?? assignedBot?.modelConfig?.model ?? null,
       prompt: built.prompt,
       packet: built.packet,
+      ...(assignedBot?.toolPolicy ? { toolPolicy: assignedBot.toolPolicy } : {}),
+      ...(resumeFrom ? { resumeFrom } : {}),
       timeoutMs: options.timeoutMs ?? policy.maxRunMinutes * 60_000,
       signal: controller.signal,
       ...(options.env === undefined ? {} : { env: options.env }),
@@ -455,6 +471,113 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       .update(agentSessions)
       .set({ status: 'idle', lastTurnAt: finishedAt, updatedAt: finishedAt })
       .where(eq(agentSessions.id, turn.sessionId))
+    return true
+  }
+
+  // Tool-level Suggest-Don't-Send approval gate: persist checkpoint and release worker slot.
+  if (report.approvalRequest !== undefined) {
+    const req = report.approvalRequest
+    const approvalId = newId()
+    const expiresAt = new Date(finishedAt.getTime() + 24 * 3_600_000)
+    await options.db.insert(actionApprovals).values({
+      id: approvalId,
+      projectId: project.id,
+      roomId: ticket.roomId,
+      ticketId: ticket.id,
+      turnId: turn.id,
+      botId: assignedBot?.id ?? null,
+      toolName: req.toolName,
+      toolCallId: req.toolCallId,
+      riskLevel: req.riskLevel,
+      title: req.title,
+      preview: req.preview,
+      toolArgs: req.toolArgs,
+      status: 'pending',
+      expiresAt,
+      createdAt: finishedAt,
+    })
+    await options.db
+      .update(sessionTurns)
+      .set({
+        status: 'waiting_approval',
+        checkpoint: req.checkpoint,
+        pausedApprovalId: approvalId,
+        tokens: report.tokens ?? 0,
+        cost: report.cost ?? 0,
+        heartbeatAt: finishedAt,
+      })
+      .where(eq(sessionTurns.id, turn.id))
+    await setTicketStage(options.db, ticket.id, 'waiting_approval', finishedAt)
+    await options.db
+      .update(agentSessions)
+      .set({ status: 'idle', lastTurnAt: finishedAt, updatedAt: finishedAt })
+      .where(eq(agentSessions.id, turn.sessionId))
+
+    const previewBody = [
+      `工具：\`${req.toolName}\`（风险等级：${req.riskLevel === 'high' ? '高' : '中'}）`,
+      `预览：${JSON.stringify(req.preview).slice(0, 600)}`,
+    ].join('\n')
+
+    if (ticket.roomId) {
+      await appendRoomMessage(options.db, {
+        projectId: project.id,
+        roomId: ticket.roomId,
+        threadKey: ticket.threadKey ?? `room:${ticket.roomId}`,
+        authorKind: assignedBot ? 'bot' : 'system',
+        authorBotId: assignedBot?.id ?? null,
+        kind: 'approval_card',
+        content: `⏸️ 需要人工审批：${req.title}\n${previewBody}`,
+        attachments: [{ type: 'approval', title: req.title, metadata: { approvalId, riskLevel: req.riskLevel } }],
+        ticketId: ticket.id,
+        turnId: turn.id,
+        syncToIm: false,
+        at: finishedAt,
+        events: bus,
+      })
+    }
+    if (ticket.channelId !== null) {
+      await options.db
+        .insert(outboxEvents)
+        .values({
+          id: newId(),
+          projectId: project.id,
+          channelId: ticket.channelId,
+          kind: 'approval',
+          dedupeKey: `approval:${approvalId}`,
+          payload: {
+            text: formatBotSignature(assignedBot, `⏸️ 待审批：${req.title}\n${previewBody}`),
+            card: {
+              title: `⏸️ 待审批：${req.title}`,
+              body: formatBotSignature(assignedBot, previewBody),
+              approvalId,
+              projectId: project.id,
+              riskLevel: req.riskLevel,
+              status: 'pending',
+            },
+          },
+          status: 'pending',
+          nextAttemptAt: finishedAt,
+          createdAt: finishedAt,
+        })
+        .onConflictDoNothing({ target: outboxEvents.dedupeKey })
+    }
+    bus.publish(project.id, 'approval.created', {
+      approvalId,
+      ticketId: ticket.id,
+      botId: assignedBot?.id ?? null,
+      toolName: req.toolName,
+      riskLevel: req.riskLevel,
+      title: req.title,
+    })
+    if (assignedBot) {
+      bus.publish(project.id, 'bot.status', {
+        botId: assignedBot.id,
+        slug: assignedBot.slug,
+        state: 'waiting_approval',
+        ticketId: ticket.id,
+        turnId: turn.id,
+      })
+    }
     return true
   }
 

@@ -49,7 +49,19 @@ export const outboxStatusEnum = pgEnum('outbox_status', ['pending', 'sent', 'fai
 export const sessionRoleEnum = pgEnum('session_role', ['main', 'executor'])
 export const sessionStatusEnum = pgEnum('session_status', ['idle', 'queued', 'running', 'error'])
 export const turnKindEnum = pgEnum('turn_kind', ['eval', 'execute', 'resume'])
-export const turnStatusEnum = pgEnum('turn_status', ['queued', 'running', 'succeeded', 'failed', 'cancelled', 'timeout'])
+export const turnStatusEnum = pgEnum('turn_status', ['queued', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancelled', 'timeout'])
+export const actionApprovalRiskEnum = pgEnum('action_approval_risk', ['medium', 'high'])
+export const actionApprovalStatusEnum = pgEnum('action_approval_status', ['pending', 'approved', 'rejected', 'revision_requested', 'expired'])
+
+export interface TurnCheckpoint {
+  messages: unknown[]
+  pendingToolCall: {
+    id: string
+    name: string
+    arguments: string
+    args: Record<string, unknown>
+  }
+}
 export const evaluationStatusEnum = pgEnum('evaluation_status', ['queued', 'running', 'decided', 'unavailable'])
 export const mandateStrengthEnum = pgEnum('mandate_strength', ['explicit', 'inferred'])
 export const assignmentStatusEnum = pgEnum('assignment_status', ['pending', 'running', 'ended'])
@@ -666,6 +678,8 @@ export const sessionTurns = pgTable(
     input: jsonb('input').$type<unknown>(),
     prompt: text('prompt'),
     result: jsonb('result').$type<unknown>(),
+    checkpoint: jsonb('checkpoint').$type<TurnCheckpoint | null>(),
+    pausedApprovalId: uuid('paused_approval_id'),
     error: text('error'),
     tokens: integer('tokens').notNull().default(0),
     cost: numeric('cost', { precision: 12, scale: 6, mode: 'number' }).notNull().default(0),
@@ -926,6 +940,41 @@ export const roomMessages = pgTable(
   ],
 )
 
+export const actionApprovals = pgTable(
+  'action_approvals',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    roomId: uuid('room_id').references(() => rooms.id, { onDelete: 'set null' }),
+    ticketId: uuid('ticket_id')
+      .notNull()
+      .references(() => tickets.id, { onDelete: 'cascade' }),
+    turnId: uuid('turn_id')
+      .notNull()
+      .references(() => sessionTurns.id, { onDelete: 'cascade' }),
+    botId: uuid('bot_id').references(() => bots.id, { onDelete: 'set null' }),
+    toolName: text('tool_name').notNull(),
+    toolCallId: text('tool_call_id').notNull(),
+    riskLevel: actionApprovalRiskEnum('risk_level').notNull().default('medium'),
+    title: text('title').notNull(),
+    preview: jsonb('preview').$type<Record<string, unknown>>().notNull().default({}),
+    toolArgs: jsonb('tool_args').$type<Record<string, unknown>>().notNull().default({}),
+    status: actionApprovalStatusEnum('status').notNull().default('pending'),
+    decidedBy: uuid('decided_by').references(() => users.id, { onDelete: 'set null' }),
+    decisionComment: text('decision_comment'),
+    decidedAt: timestamp('decided_at', { withTimezone: true, mode: 'date' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }),
+    imMessageRef: jsonb('im_message_ref').$type<{ provider?: string; messageId?: string; chatId?: string } | null>(),
+    createdAt,
+  },
+  (table) => [
+    index('action_approvals_project_status_idx').on(table.projectId, table.status, table.createdAt),
+    index('action_approvals_ticket_idx').on(table.ticketId),
+  ],
+)
+
 export const schema = {
   users,
   identities,
@@ -961,6 +1010,7 @@ export const schema = {
   rooms,
   roomBots,
   roomMessages,
+  actionApprovals,
 }
 
 export type Schema = typeof schema
@@ -982,3 +1032,4 @@ export type TicketInputRow = typeof ticketInputs.$inferSelect
 export type BotRow = typeof bots.$inferSelect
 export type RoomRow = typeof rooms.$inferSelect
 export type RoomMessageRow = typeof roomMessages.$inferSelect
+export type ActionApprovalRow = typeof actionApprovals.$inferSelect

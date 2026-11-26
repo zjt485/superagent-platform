@@ -477,6 +477,34 @@ export function subscribeProjectEvents(
   }
 }
 
+export interface ActionApproval {
+  id: string
+  projectId: string
+  roomId: string | null
+  ticketId: string
+  turnId: string
+  botId: string | null
+  toolName: string
+  toolCallId: string
+  riskLevel: 'medium' | 'high'
+  title: string
+  preview: Record<string, unknown>
+  toolArgs: Record<string, unknown>
+  status: 'pending' | 'approved' | 'rejected' | 'revision_requested' | 'expired'
+  decidedBy: string | null
+  decisionComment: string | null
+  decidedAt: string | null
+  expiresAt: string | null
+  botName: string | null
+  botSlug: string | null
+  botAvatar: string | null
+  ticketTitle: string | null
+  ticketShortName: string | null
+  roomName: string | null
+  decidedByName: string | null
+  createdAt: string
+}
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -647,5 +675,21 @@ export const api = {
         method: 'POST',
         ...json(body),
       }),
+  },
+
+  approvals: {
+    list: (projectId: string, status?: ActionApproval['status']) =>
+      request<{ items: ActionApproval[] }>(
+        `/v1/projects/${projectId}/approvals${status ? `?status=${encodeURIComponent(status)}` : ''}`,
+      ),
+    decide: (
+      projectId: string,
+      approvalId: string,
+      body: { decision: 'approved' | 'rejected' | 'revision_requested'; comment?: string },
+    ) =>
+      request<{ approval: ActionApproval; resumeTurnId: string }>(
+        `/v1/projects/${projectId}/approvals/${approvalId}/decide`,
+        { method: 'POST', ...json(body) },
+      ),
   },
 }

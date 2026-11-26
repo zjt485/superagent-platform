@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from './types.js'
+import { buildApprovalPreview, evaluateToolPolicy } from './gate.js'
 
 type JsonObject = Record<string, unknown>
 
@@ -259,7 +260,7 @@ export class OpenAiTurnRuntime implements TurnRuntime {
     account: (usage: ChatCompletion['usage']) => void,
   ): Promise<unknown> {
     if (!input.workspace) throw new Error('executor runtime requires a workspace')
-    const messages: ChatMessage[] = [
+    let messages: ChatMessage[] = [
       { role: 'system', content: input.prompt },
       {
         role: 'user',
@@ -267,6 +268,32 @@ export class OpenAiTurnRuntime implements TurnRuntime {
           '这是直连模型运行。使用工具在工作区内完成实现和验证；不要 push、不要创建 PR。完成后直接返回报告 JSON 对象（status/summary/...），不要写 .superagent/result.json，也不要包 output 字段。',
       },
     ]
+
+    if (input.resumeFrom) {
+      const { checkpoint, decision, comment } = input.resumeFrom
+      messages = [...(checkpoint.messages as ChatMessage[])]
+      const pending = checkpoint.pendingToolCall
+      await input.onEvent({
+        type: 'approval_resolved',
+        message: `${pending.name}: ${decision}`,
+        payload: { toolName: pending.name, decision, comment: comment ?? null },
+      })
+      if (decision === 'approved') {
+        const result = await this.executeTool(pending.name, pending.arguments, input)
+        messages.push({ role: 'tool', tool_call_id: pending.id, content: result })
+      } else {
+        messages.push({
+          role: 'tool',
+          tool_call_id: pending.id,
+          content: JSON.stringify({
+            approved: false,
+            decision,
+            comment: comment || '人工拒绝执行此高风险操作，请根据反馈调整方案。',
+          }),
+        })
+      }
+    }
+
     let pendingHandoff: { toBotSlug: string; summary: string; context: string; expectedOutput?: string } | null = null
     for (let step = 0; step < this.options.maxSteps; step += 1) {
       const completion = await this.chat(messages, TOOL_DEFINITIONS, signal)
@@ -277,9 +304,56 @@ export class OpenAiTurnRuntime implements TurnRuntime {
       if (toolCalls.length > 0) {
         messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: toolCalls })
         for (const call of toolCalls) {
+          let parsedArgs: JsonObject = {}
+          try {
+            const raw = JSON.parse(call.function.arguments || '{}') as unknown
+            if (raw && typeof raw === 'object' && !Array.isArray(raw)) parsedArgs = raw as JsonObject
+          } catch {
+            // let executeTool report invalid arguments
+          }
+
+          const gate = evaluateToolPolicy(input.toolPolicy, call.function.name, parsedArgs)
+          if (gate.decision === 'deny') {
+            await input.onEvent({ type: 'tool_denied', message: `${call.function.name}: ${gate.reason}` })
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              content: JSON.stringify({ error: `blocked by tool policy: ${gate.reason}` }),
+            })
+            continue
+          }
+          if (gate.decision === 'confirm') {
+            const preview = buildApprovalPreview(call.function.name, parsedArgs, gate.riskLevel)
+            await input.onEvent({
+              type: 'approval_requested',
+              message: preview.title,
+              payload: { toolName: call.function.name, riskLevel: gate.riskLevel },
+            })
+            return {
+              status: 'waiting',
+              summary: `操作「${preview.title}」需要人工审批后继续执行。`,
+              approvalRequest: {
+                toolName: call.function.name,
+                toolCallId: call.id,
+                riskLevel: preview.riskLevel,
+                title: preview.title,
+                preview: preview.preview,
+                toolArgs: parsedArgs,
+                checkpoint: {
+                  messages,
+                  pendingToolCall: {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                    args: parsedArgs,
+                  },
+                },
+              },
+            }
+          }
+
           if (call.function.name === 'handoff') {
             try {
-              const parsedArgs = JSON.parse(call.function.arguments || '{}') as JsonObject
               const toBotSlug = typeof parsedArgs.to_bot_slug === 'string' ? parsedArgs.to_bot_slug.replace(/^@/, '').trim() : ''
               const summary = typeof parsedArgs.summary === 'string' ? parsedArgs.summary.trim() : ''
               const context = typeof parsedArgs.context === 'string' ? parsedArgs.context.trim() : summary

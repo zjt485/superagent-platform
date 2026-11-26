@@ -1,6 +1,6 @@
 import { AppError } from '../errors.js'
 import { constantTimeEqual } from '../security/tokens.js'
-import type { ImAdapter, ImWebhookInput, ImWebhookResult, SendMessageInput, SendMessageResult } from '../domain/im.js'
+import type { ImAdapter, ImWebhookInput, ImWebhookResult, MessageCard, SendMessageInput, SendMessageResult } from '../domain/im.js'
 import type { InboundEvent, InboundMessage } from '../domain/message.js'
 import type { OAuthIdentity, OAuthProvider } from '../domain/oauth.js'
 import { decryptFeishuPayload, verifyFeishuSignature } from './feishu-crypto.js'
@@ -21,6 +21,59 @@ const asRecord = (value: unknown): Json => (value && typeof value === 'object' ?
 const asString = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined)
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 
+export function buildFeishuInteractiveCard(card: MessageCard): Json {
+  const template =
+    card.status === 'approved'
+      ? 'green'
+      : card.status === 'rejected'
+        ? 'red'
+        : card.riskLevel === 'high'
+          ? 'orange'
+          : 'blue'
+  const elements: Json[] = [
+    {
+      tag: 'div',
+      text: { tag: 'lark_md', content: card.body.slice(0, 4000) },
+    },
+  ]
+
+  const actions: Json[] = []
+  if (card.approvalId && card.projectId && (!card.status || card.status === 'pending')) {
+    actions.push(
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '批准执行' },
+        type: 'primary',
+        value: { action: 'approval', decision: 'approved', projectId: card.projectId, approvalId: card.approvalId },
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '拒绝' },
+        type: 'danger',
+        value: { action: 'approval', decision: 'rejected', projectId: card.projectId, approvalId: card.approvalId },
+      },
+    )
+  }
+  if (card.url) {
+    actions.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '在控制台查看' },
+      type: 'default',
+      url: card.url,
+    })
+  }
+  if (actions.length > 0) {
+    elements.push({ tag: 'action', actions })
+  }
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: card.title.slice(0, 120) },
+    },
+    elements,
+  }
+}
 interface TokenCache {
   value: string
   expiresAt: number
@@ -147,10 +200,9 @@ export class FeishuAdapter implements ImAdapter, OAuthProvider {
 
   async send(input: SendMessageInput): Promise<SendMessageResult> {
     const token = await this.tenantToken()
-    const text = input.card
-      ? [input.card.title, input.card.body, input.card.url].filter(Boolean).join('\n')
-      : input.text
-    const body: Json = { msg_type: 'text', content: JSON.stringify({ text }) }
+    const body: Json = input.card
+      ? { msg_type: 'interactive', content: JSON.stringify(buildFeishuInteractiveCard(input.card)) }
+      : { msg_type: 'text', content: JSON.stringify({ text: input.text }) }
     const path = input.replyToMessageId
       ? `/open-apis/im/v1/messages/${encodeURIComponent(input.replyToMessageId)}/reply`
       : '/open-apis/im/v1/messages?receive_id_type=chat_id'
@@ -159,6 +211,19 @@ export class FeishuAdapter implements ImAdapter, OAuthProvider {
     const response = await this.request<Json>(path, { method: 'POST', body: JSON.stringify(body) }, token)
     const data = asRecord(response.data)
     return { messageId: asString(data.message_id) }
+  }
+
+  /** Update an existing interactive card in place (e.g. after approval is decided). */
+  async updateCard(messageId: string, card: MessageCard): Promise<void> {
+    const token = await this.tenantToken()
+    await this.request<Json>(
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ content: JSON.stringify(buildFeishuInteractiveCard(card)) }),
+      },
+      token,
+    )
   }
 
   /**

@@ -109,6 +109,7 @@ describe('ticket stage machine', () => {
       queued: 'triaged',
       working: 'running',
       plan_review: 'planned',
+      waiting_approval: 'planned',
       idle: 'waiting_review',
       review: 'waiting_review',
       answer: 'waiting_review',

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { BotToolPolicy, TurnCheckpoint } from '../../db/schema.js'
 
 /**
  * Wire protocols between the platform and the agent runtime. External command
@@ -103,6 +104,12 @@ export interface ExecutorTurnPacket {
   workspaceReady: boolean
 }
 
+export interface TurnResumeInput {
+  checkpoint: TurnCheckpoint
+  decision: 'approved' | 'rejected' | 'revision_requested'
+  comment?: string | null
+}
+
 export interface TurnRuntimeInput {
   role: 'main' | 'executor'
   projectId: string
@@ -112,6 +119,8 @@ export interface TurnRuntimeInput {
   workspace?: string
   prompt: string
   packet: MainTurnPacket | ExecutorTurnPacket
+  toolPolicy?: BotToolPolicy
+  resumeFrom?: TurnResumeInput
   timeoutMs: number
   signal: AbortSignal
   env: Record<string, string>

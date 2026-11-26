@@ -4,6 +4,7 @@ export type TicketStage =
   | 'queued'
   | 'working'
   | 'plan_review'
+  | 'waiting_approval'
   | 'idle'
   | 'review'
   | 'answer'
@@ -27,11 +28,13 @@ export type StageEvent =
   | { type: 'dispatch' }
   | { type: 'progress' }
   | { type: 'waiting'; plan: boolean }
+  | { type: 'approval_requested' }
   | { type: 'ready'; codeChanged: boolean }
   | { type: 'blocked' }
   | { type: 'failed' }
   | { type: 'approve' }
   | { type: 'reject' }
+  | { type: 'revise' }
   | { type: 'input' }
   | { type: 'retry' }
   | { type: 'stop' }
@@ -55,7 +58,7 @@ export type ReportStatus = 'progress' | 'waiting' | 'ready' | 'blocked' | 'faile
 
 export type InputKind = 'message' | 'approval' | 'policy' | 'note' | 'system'
 
-export type TurnStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timeout'
+export type TurnStatus = 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'cancelled' | 'timeout'
 
 export interface CoreTrigger {
   id: string
@@ -108,6 +111,24 @@ export interface HandoffRequest {
   expectedOutput?: string
 }
 
+export interface ApprovalRequestPayload {
+  toolName: string
+  toolCallId: string
+  riskLevel: 'medium' | 'high'
+  title: string
+  preview: Record<string, unknown>
+  toolArgs: Record<string, unknown>
+  checkpoint: {
+    messages: unknown[]
+    pendingToolCall: {
+      id: string
+      name: string
+      arguments: string
+      args: Record<string, unknown>
+    }
+  }
+}
+
 export interface Report {
   status: ReportStatus
   summary: string
@@ -117,6 +138,7 @@ export interface Report {
   prUrl?: string
   changedFiles?: string[]
   handoff?: HandoffRequest
+  approvalRequest?: ApprovalRequestPayload
   tokens?: number
   cost?: number
   raw?: unknown

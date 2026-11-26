@@ -1,6 +1,6 @@
 import { and, eq, lte, sql } from 'drizzle-orm'
 import type { Deps } from './deps.js'
-import { channels, outboxEvents, type OutboxRow } from '../db/schema.js'
+import { actionApprovals, channels, outboxEvents, type OutboxRow } from '../db/schema.js'
 import type { OutboxMessage } from '../domain/outbox.js'
 import { newId } from '../domain/ids.js'
 import type { ChannelProvider } from '../domain/status.js'
@@ -93,6 +93,13 @@ async function deliver(deps: Deps, row: OutboxRow, senders: Map<ChannelProvider,
       channelConfig: channel.config,
     })
     await deps.db.update(outboxEvents).set({ status: 'sent', sentAt: deps.now(), lastError: null }).where(eq(outboxEvents.id, row.id))
+    if (row.payload.card?.approvalId && result.messageId) {
+      await deps.db
+        .update(actionApprovals)
+        .set({ imMessageRef: { provider: channel.provider, messageId: result.messageId, chatId: channel.externalChatId } })
+        .where(eq(actionApprovals.id, row.payload.card.approvalId))
+        .catch(() => {})
+    }
     await audit(deps, {
       projectId: row.projectId,
       action: 'notification.sent',
