@@ -7,13 +7,16 @@ import { createHarness, type Harness } from './helpers/app.js'
 import { createIm } from '../src/im/index.js'
 import { encryptWecom, wecomSignature } from '../src/im/wecom-crypto.js'
 import { loginWithIdentity } from '../src/services/auth.js'
-import { bindChannel, bindRepo, createProject, updateProject } from '../src/services/projects.js'
-import { claimNextTurn } from '../src/dual/sessions.js'
-import { executeTurn, type DualWorkerContext } from '../src/dual/worker.js'
+import { bindChannel, bindRepo, createProject } from '../src/services/projects.js'
+import { coreTick } from '../src/core/worker/tick.js'
+import { dispatchOnce } from '../src/core/worker/dispatcher.js'
+import { RuntimeExecutor } from '../src/core/worker/runtime-executor.js'
+import { GitDeliveryProvider } from '../src/core/worker/delivery.js'
+import { createDbWorkspaceProvider } from '../src/core/worker/workspace-provider.js'
+import { RuleBasedRouterModel } from '../src/core/router/model.js'
 import { FakeGitOps } from '../src/worker/fake-git.js'
-import { FakeTurnRuntime } from '../src/dual/runtime.js'
-import { createDbQueue } from '../src/queue/index.js'
-import { evaluations, outboxEvents, tickets } from '../src/db/schema.js'
+import { FakeTurnRuntime } from '../src/core/agent/runtime.js'
+import { evaluations, outboxEvents, tickets, triggers } from '../src/db/schema.js'
 
 const harnesses: Harness[] = []
 const dirs: string[] = []
@@ -26,29 +29,37 @@ afterEach(async () => {
 })
 
 async function seed() {
-  const dir = await mkdtemp(path.join(tmpdir(), 'wecom-dual-'))
+  const dir = await mkdtemp(path.join(tmpdir(), 'wecom-core-'))
   dirs.push(dir)
   const h = await createHarness({ WORKSPACES_DIR: dir })
   harnesses.push(h)
   h.ctx.im = createIm(h.config, h.ctx.log).adapters
   const alice = await loginWithIdentity(h.ctx, 'wecom', { externalId: 'zhangsan', name: '张三' })
-  const project = await createProject(h.ctx, alice, { name: '企微双 Agent' })
+  const project = await createProject(h.ctx, alice, { name: '企微 Core' })
   await bindRepo(h.ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world' })
   await bindChannel(h.ctx, project.id, alice, { provider: 'wecom', externalChatId: 'wc_group', name: '企微群' })
-  await updateProject(h.ctx, project.id, alice, { status: 'active' })
   return { h, project, alice }
 }
 
 async function drain(h: Harness) {
-  const ctx: DualWorkerContext = {
-    ...h.ctx,
-    queue: createDbQueue(),
-    ports: { github: h.ctx.github, git: new FakeGitOps(), runtime: new FakeTurnRuntime({ delayMs: 1 }) },
-  }
+  const workspace = createDbWorkspaceProvider({
+    db: h.ctx.db,
+    rootDir: h.config.WORKSPACES_DIR,
+    github: h.ctx.github,
+    webBase: h.config.GITHUB_WEB_BASE,
+  })
+  const delivery = new GitDeliveryProvider({
+    db: h.ctx.db,
+    git: new FakeGitOps(),
+    github: h.ctx.github,
+    author: { name: h.config.GIT_AUTHOR_NAME, email: h.config.GIT_AUTHOR_EMAIL },
+    webBase: h.config.GITHUB_WEB_BASE,
+  })
+  const executor = new RuntimeExecutor(new FakeTurnRuntime({ delayMs: 1 }))
+  await coreTick({ db: h.ctx.db, model: new RuleBasedRouterModel(), now: h.ctx.now, maxThreads: 10 })
   for (let index = 0; index < 8; index += 1) {
-    const turn = await claimNextTurn(ctx, 'wecom-worker')
-    if (!turn) break
-    await executeTurn(ctx, turn)
+    const ran = await dispatchOnce({ db: h.ctx.db, executor, workspace, delivery, now: h.ctx.now })
+    if (!ran) break
   }
 }
 
@@ -70,13 +81,13 @@ async function post(h: Harness, input: { msgId: string; content: string; from?: 
   })
 }
 
-describe('WeCom dual-agent intake', () => {
-  it('creates an Eval from an encrypted group message, then a Ticket through the Main Session', async () => {
+describe('WeCom core intake', () => {
+  it('queues a trigger from an encrypted group message, routes it to a Ticket and handles /status', async () => {
     const { h } = await seed()
     const response = await post(h, { msgId: 'wc_msg_1', content: '@Superagent 修复构建失败' })
     expect(response.statusCode).toBe(200)
     expect(await h.ctx.db.select().from(tickets)).toHaveLength(0)
-    expect(await h.ctx.db.select().from(evaluations)).toHaveLength(1)
+    expect(await h.ctx.db.select().from(triggers)).toHaveLength(1)
     await drain(h)
     const [ticket] = await h.ctx.db.select().from(tickets)
     expect(ticket?.title).toBe('修复构建失败')

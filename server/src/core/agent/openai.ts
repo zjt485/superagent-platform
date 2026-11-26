@@ -167,9 +167,9 @@ function commandResult(code: number | null, stdout: string, stderr: string): str
 }
 
 /**
- * Direct OpenAI-compatible runtime. It is deliberately tool-only for the
- * Executor role: the model may read/write files and run tests inside the
- * isolated workspace, but the platform still owns git delivery.
+ * Direct OpenAI-compatible runtime. Primary runtime for the unified core
+ * engine: the model executes a workspace tool loop while the platform retains
+ * control over policy gates, git delivery and event streaming.
  */
 export class OpenAiTurnRuntime implements TurnRuntime {
   readonly name = 'openai'

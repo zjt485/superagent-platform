@@ -2,14 +2,14 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { uuidParam } from '../../http/helpers.js'
-import { findTurn, recordTurnEvent } from '../../dual/sessions.js'
+import { findTurn, recordTurnEvent } from '../../core/operations.js'
 import { sessionTurns } from '../../db/schema.js'
 import { eq } from 'drizzle-orm'
 import { constantTimeEqual } from '../../security/tokens.js'
 import { unauthorized } from '../../errors.js'
 import { receiveCoreTrigger } from '../../core/intake.js'
 import { coreTick } from '../../core/worker/tick.js'
-import { RuleBasedRouterModel } from '../../core/router/model.js'
+import { routerModelFromConfig } from '../../core/router/from-config.js'
 
 const eventSchema = z.object({
   type: z.string().min(1).max(80),
@@ -96,7 +96,7 @@ export function registerInternalRoutes(app: FastifyInstance, ctx: AppContext): v
     checkToken(request.headers.authorization, ctx.config.INTERNAL_TOKEN)
     return coreTick({
       db: ctx.db,
-      model: new RuleBasedRouterModel(),
+      model: routerModelFromConfig(ctx.config),
       now: ctx.now,
       maxThreads: 50,
     })

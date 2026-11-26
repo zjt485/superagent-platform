@@ -4,6 +4,7 @@ import type { RouterModel } from '../router/model.js'
 import { dispatchOnce } from './dispatcher.js'
 import type { DeliveryProvider } from './delivery.js'
 import type { Executor } from './executor.js'
+import { reapStaleCoreTurns } from './reaper.js'
 import type { WorkspaceProvider } from './workspace-provider.js'
 import { coreTick } from './tick.js'
 
@@ -14,9 +15,12 @@ export interface CoreLoopOptions {
   now: () => Date
   intervalMs?: number
   maxRounds?: number
+  leaseSeconds?: number
+  reapIntervalMs?: number
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
   timeoutMs?: number
+  heartbeatMs?: number
   env?: Record<string, string>
   log?: Logger
 }
@@ -32,13 +36,32 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
   let stopping = false
   let completed = false
   const intervalMs = options.intervalMs ?? 1000
+  const reapIntervalMs = options.reapIntervalMs ?? 30_000
+  let lastReapAt = 0
 
   const loop = async (): Promise<void> => {
     while (!stopping) {
       try {
+        const nowMs = options.now().getTime()
+        if (options.leaseSeconds !== undefined && nowMs - lastReapAt >= reapIntervalMs) {
+          lastReapAt = nowMs
+          await reapStaleCoreTurns({ db: options.db, now: options.now, leaseSeconds: options.leaseSeconds })
+        }
         const routed = await coreTick({ db: options.db, model: options.model, now: options.now, maxThreads: 10 })
         let dispatched = 0
-        while (!stopping && (await dispatchOnce({ db: options.db, executor: options.executor, now: options.now, ...(options.workspace === undefined ? {} : { workspace: options.workspace }), ...(options.delivery === undefined ? {} : { delivery: options.delivery }), ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.env === undefined ? {} : { env: options.env }) }))) {
+        while (
+          !stopping &&
+          (await dispatchOnce({
+            db: options.db,
+            executor: options.executor,
+            now: options.now,
+            ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
+            ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
+            ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+            ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
+            ...(options.env === undefined ? {} : { env: options.env }),
+          }))
+        ) {
           dispatched += 1
           if (options.maxRounds !== undefined && dispatched >= options.maxRounds) break
         }

@@ -65,7 +65,7 @@ export async function createProject(deps: Deps, creator: { id: string; name: str
         slug,
         description: input.description?.trim() || null,
         ownerId: creator.id,
-        status: 'draft',
+        status: 'active',
         policyJson: input.policy === undefined ? DEFAULT_POLICY : projectPolicySchema.parse(input.policy),
         modelConfig: input.modelConfig === undefined ? DEFAULT_MODEL_CONFIG : modelConfigSchema.parse(input.modelConfig),
         createdAt: now,
@@ -194,7 +194,7 @@ export async function projectBundle(deps: Deps, projectId: string, user: { id: s
     readiness: {
       repo: Boolean(repo),
       channel: Boolean(channel),
-      canActivate: Boolean(repo && channel),
+      canActivate: true,
     },
   }
 }
@@ -245,16 +245,6 @@ export async function updateProject(
     const target = input.status
     if (!PROJECT_STATUS_TRANSITIONS[project.status].includes(target)) {
       throw conflict(`项目状态不能从 ${project.status} 变为 ${target}`)
-    }
-    if (target === 'active') {
-      const [repo] = await deps.db.select({ id: repos.id }).from(repos).where(eq(repos.projectId, projectId))
-      const [channel] = await deps.db
-        .select({ id: channels.id })
-        .from(channels)
-        .where(and(eq(channels.projectId, projectId), eq(channels.status, 'active')))
-      if (!repo || !channel) {
-        throw conflict('启用项目前必须绑定 GitHub 仓库和一个 IM 群')
-      }
     }
     patch.status = target
     if (target === 'archived') patch.archivedAt = deps.now()

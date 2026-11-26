@@ -1,8 +1,9 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
-import { evaluations, type ProjectRow, type ThreadRow } from '../../db/schema.js'
+import { evaluations, usage, type ProjectRow, type ThreadRow } from '../../db/schema.js'
 import { newId } from '../../domain/ids.js'
+import { dayKey } from '../../services/usage.js'
 import type { TriggerAddress } from '../domain/types.js'
 import { applyRouterOutput } from './apply.js'
 import { renderBoard, type BoardTicket, type BoardTrigger } from './board.js'
@@ -81,6 +82,7 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
       (ticket) => ticket.channelId === input.thread.channelId && ticket.threadKey === input.thread.threadKey,
     )
     const boardTickets: BoardTicket[] = tickets.map((ticket) => ({
+      id: ticket.id,
       shortName: ticket.shortName ?? ticket.id.slice(0, 8),
       title: ticket.title,
       stage: (ticket.stage ?? 'queued') as BoardTicket['stage'],
@@ -109,7 +111,8 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
       tickets: boardTickets,
       batch: batch.map(toBoardTrigger),
     })
-    const output = parseRouterOutput(raw)
+    const parsed = parseRouterOutput(raw)
+    const output = raw.usage === undefined ? parsed : { ...parsed, usage: raw.usage }
     validateRouterOutput(output, batch.map((trigger) => trigger.id))
     const applied = await applyRouterOutput(input.db, {
       projectId: input.project.id,
@@ -126,8 +129,29 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
 
     await input.db
       .update(evaluations)
-      .set({ status: 'decided', summary: output.summary, endedAt: input.at })
+      .set({
+        status: 'decided',
+        summary: output.summary,
+        promptTokens: output.usage?.promptTokens ?? null,
+        outputTokens: output.usage?.outputTokens ?? null,
+        endedAt: input.at,
+      })
       .where(eq(evaluations.id, runId))
+    if (output.usage !== undefined && output.usage.totalTokens > 0) {
+      const day = dayKey(input.at)
+      const tokens = output.usage.totalTokens
+      const cost = output.usage.cost ?? 0
+      await input.db
+        .insert(usage)
+        .values({ id: newId(), projectId: input.project.id, day, runs: 0, tokens, cost })
+        .onConflictDoUpdate({
+          target: [usage.projectId, usage.day],
+          set: {
+            tokens: sql`${usage.tokens} + ${tokens}`,
+            cost: sql`${usage.cost} + ${cost}`,
+          },
+        })
+    }
     await releaseThread(input.db, input.thread.id, output.summary)
     return { runId, ...applied }
   } catch (error) {

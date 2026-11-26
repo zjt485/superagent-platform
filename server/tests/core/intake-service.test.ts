@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
 
 import { createHarness } from '../helpers/app.js'
-import type { DualContext } from '../../src/dual/engine.js'
+import type { CoreContext } from '../../src/core/operations.js'
 import { ingestInboundEvent } from '../../src/services/intake.js'
 import {
   channels,
@@ -78,10 +78,10 @@ function event(): InboundEvent {
 
 describe('core intake service', () => {
   it('routes a Feishu message into the core router and creates a ticket on tick', async () => {
-    const harness = await createHarness({ CORE_ENABLED: true })
+    const harness = await createHarness()
     const { projectId } = await seed(harness)
 
-    const results = await ingestInboundEvent(harness.ctx as unknown as DualContext, event())
+    const results = await ingestInboundEvent(harness.ctx as unknown as CoreContext, event())
     expect(results[0]?.action).toBe('trigger_evaluated')
 
     const triggerRows = await harness.ctx.db.select().from(triggers).where(eq(triggers.projectId, projectId))

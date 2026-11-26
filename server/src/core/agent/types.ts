@@ -1,52 +1,10 @@
 import { z } from 'zod'
 
 /**
- * Wire protocols between the platform and the two agent roles. The real DSH
- * command writes the same shape to `.superagent/result.json`; the fake runtime
- * produces it in-process.
+ * Wire protocols between the platform and the agent runtime. External command
+ * runtimes write the same shape to `.superagent/result.json`; the OpenAI and
+ * fake runtimes produce it in-process.
  */
-
-export const MAIN_DECISION_OUTPUT = z.object({
-  decisions: z
-    .array(
-      z.discriminatedUnion('action', [
-        z.object({
-          action: z.literal('accept'),
-          triggerId: z.string().min(1),
-          reason: z.string().max(1000).optional(),
-          reply: z.string().max(2000).optional(),
-          ticket: z.object({
-            title: z.string().trim().min(1).max(200),
-            body: z.string().max(20_000).optional(),
-            scope: z.string().trim().min(1).max(4000),
-            strength: z.enum(['explicit', 'inferred']).default('explicit'),
-            planApproval: z.enum(['required', 'auto']).optional(),
-          }),
-        }),
-        z.object({
-          action: z.literal('ignore'),
-          triggerId: z.string().min(1),
-          reason: z.string().max(1000).optional(),
-        }),
-        z.object({
-          action: z.literal('stop'),
-          triggerId: z.string().min(1),
-          ticketId: z.string().min(1),
-          reason: z.string().max(1000).optional(),
-        }),
-        z.object({
-          action: z.literal('attach'),
-          triggerId: z.string().min(1),
-          ticketId: z.string().min(1),
-          reason: z.string().max(1000).optional(),
-        }),
-      ]),
-    )
-    .min(1)
-    .max(20),
-})
-
-export type MainDecisionOutput = z.infer<typeof MAIN_DECISION_OUTPUT>
 
 export const EXECUTOR_REPORT_OUTPUT = z.object({
   status: z.enum(['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped']),
@@ -54,23 +12,12 @@ export const EXECUTOR_REPORT_OUTPUT = z.object({
   plan: z.string().max(20_000).optional(),
   attention: z.object({ question: z.string().trim().min(1).max(1000) }).optional(),
   branch: z.string().max(200).optional(),
+  changedFiles: z.array(z.string()).optional(),
   tokens: z.number().int().min(0).optional(),
   cost: z.number().min(0).optional(),
 })
 
 export type ExecutorReportOutput = z.infer<typeof EXECUTOR_REPORT_OUTPUT>
-
-export type TicketStage =
-  | 'queued'
-  | 'working'
-  | 'plan_review'
-  | 'idle'
-  | 'review'
-  | 'blocked'
-  | 'failed'
-  | 'answer'
-  | 'done'
-  | 'cancelled'
 
 export interface TriggerCard {
   id: string

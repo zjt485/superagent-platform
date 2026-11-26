@@ -1,4 +1,4 @@
-import type { ExecutorTurnPacket } from '../../dual/types.js'
+import type { ExecutorTurnPacket } from '../agent/types.js'
 import type { Report } from '../domain/types.js'
 
 export interface TurnContext {
@@ -19,7 +19,9 @@ export interface TurnContext {
   prompt: string
   packet: ExecutorTurnPacket
   timeoutMs: number
+  signal?: AbortSignal
   env?: Record<string, string>
+  onEvent?: (event: { type: string; message?: string; payload?: unknown }) => void | Promise<void>
 }
 
 /** One turn of work; implementations may fork a child process or run in-process. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from '../../src/dual/types.js'
+import type { ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from '../../src/core/agent/types.js'
 import { RuntimeExecutor, reportFromRuntime } from '../../src/core/worker/runtime-executor.js'
 import type { TurnContext } from '../../src/core/worker/executor.js'
 

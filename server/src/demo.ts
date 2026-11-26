@@ -8,15 +8,19 @@ import { MockGithubClient } from './github/client.js'
 import { buildApp } from './app/build.js'
 import type { AppContext } from './app/context.js'
 import { loginWithIdentity } from './services/auth.js'
-import { addMemberByUserId, bindChannel, bindRepo, createProject, updateProject } from './services/projects.js'
+import { addMemberByUserId, bindChannel, bindRepo, createProject } from './services/projects.js'
 import { createInvite } from './services/invites.js'
 import { createManagedWecomGroup } from './services/wecom-join.js'
 import { flushOutbox } from './services/outbox.js'
-import { receiveTrigger } from './dual/engine.js'
-import { claimNextTurn } from './dual/sessions.js'
-import { executeTurn, type DualWorkerContext } from './dual/worker.js'
-import { startInlineWorker } from './dual/inline.js'
-import { FakeTurnRuntime } from './dual/runtime.js'
+import { receiveCoreTrigger } from './core/intake.js'
+import { coreTick } from './core/worker/tick.js'
+import { dispatchOnce } from './core/worker/dispatcher.js'
+import { startCoreLoop } from './core/worker/loop.js'
+import { RuntimeExecutor } from './core/worker/runtime-executor.js'
+import { GitDeliveryProvider } from './core/worker/delivery.js'
+import { createDbWorkspaceProvider } from './core/worker/workspace-provider.js'
+import { RuleBasedRouterModel } from './core/router/model.js'
+import { FakeTurnRuntime } from './core/agent/runtime.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { and, desc, eq } from 'drizzle-orm'
 import QRCode from 'qrcode'
@@ -78,8 +82,6 @@ ctx.senders.set('wecom', {
   },
 })
 
-// The demo has no real CorpID, so it uses an app-chat-shaped fake adapter. The
-// real adapter implements the same createChat/addMembers calls with WeCom.
 const demoWecomGroups = new Map<string, string[]>()
 const demoWecomAdapter: ImAdapter = {
   provider: 'wecom',
@@ -121,11 +123,25 @@ async function linkIdentity(userId: string, provider: string, externalId: string
   })
 }
 
+const workspace = createDbWorkspaceProvider({
+  db: handle.db,
+  rootDir: config.WORKSPACES_DIR,
+  github,
+  webBase: config.GITHUB_WEB_BASE,
+})
+const delivery = new GitDeliveryProvider({
+  db: handle.db,
+  git: new FakeGitOps(),
+  github,
+  author: { name: config.GIT_AUTHOR_NAME, email: config.GIT_AUTHOR_EMAIL },
+  webBase: config.GITHUB_WEB_BASE,
+})
+const routerModel = new RuleBasedRouterModel()
+const executor = new RuntimeExecutor(new FakeTurnRuntime({ delayMs: 20 }))
+
 const existingProjects = await handle.db.select().from(projects)
 if (existingProjects.length === 0) {
-  process.stdout.write('首次运行：正在创建演示项目，并跑通 Main Session → Executor Session → PR…\n')
-  // Real IM identities for the simulated webhook; dev identities make the
-  // demo login return the same users.
+  process.stdout.write('首次运行：正在创建演示项目，并跑通 Router → Executor → PR…\n')
   const alice = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_alice', name: 'Alice' })
   const bob = await loginWithIdentity(ctx, 'feishu', { externalId: 'ou_bob', name: 'Bob' })
   await linkIdentity(alice.id, 'dev', 'dev-alice', 'Alice')
@@ -135,15 +151,13 @@ if (existingProjects.length === 0) {
 
   const project = await createProject(ctx, alice, {
     name: '演示项目',
-    description: '由 pnpm demo 创建：Main Session 接单，Executor Session 执行并开 PR，人工合并。',
+    description: '由 pnpm demo 创建：Core Router 路由接单，Executor 执行并开 PR，人工合并。',
   })
   await bindRepo(ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world', defaultBranch: 'main' })
   await bindChannel(ctx, project.id, alice, { provider: 'feishu', externalChatId: 'oc_demo_project', name: '演示项目群' })
-  await updateProject(ctx, project.id, alice, { status: 'active' })
+  const [channel] = await handle.db.select().from(channels).where(and(eq(channels.projectId, project.id), eq(channels.status, 'active')))
   await addMemberByUserId(ctx, project.id, alice, { userId: bob.id, role: 'member' })
 
-  // A second project demonstrates the real WeCom scan-to-join flow with a
-  // simulated app-chat adapter.
   const wecomProject = await createProject(ctx, alice, {
     name: '企微扫码演示',
     description: '扫描项目详情页的二维码，使用企业微信登录后自动加入项目群。',
@@ -153,26 +167,25 @@ if (existingProjects.length === 0) {
   const wecomSetup = await createManagedWecomGroup(ctx, wecomProject.id, alice)
 
   const invite = await createInvite(ctx, project.id, alice, { role: 'member', maxUses: 20, expiresInHours: 72 })
-  await receiveTrigger(ctx, {
+  await receiveCoreTrigger(handle.db, {
+    projectId: project.id,
+    channelId: channel?.id ?? null,
     provider: 'feishu',
     externalId: 'demo_trigger_1',
-    chatId: 'oc_demo_project',
     threadKey: 'demo_thread_1',
-    senderExternalId: 'ou_alice',
-    senderName: 'Alice',
-    mentionBot: true,
-    text: '@_user_1 在 docs 下新增欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
+    actorUserId: alice.id,
+    actorExternalId: 'ou_alice',
+    actorName: 'Alice',
+    mentionedBot: true,
+    address: 'mention',
+    text: '在 docs 下新增欢迎页，写明如何启动服务、如何跑测试，并把验证方式写清楚。',
+    at: new Date(),
   })
 
-  const workerCtx: DualWorkerContext = {
-    ...deps,
-    queue: createDbQueue(),
-    ports: { github, git: new FakeGitOps(), runtime: new FakeTurnRuntime({ delayMs: 20 }) },
-  }
+  await coreTick({ db: handle.db, model: routerModel, now: () => new Date(), maxThreads: 10 })
   for (let index = 0; index < 4; index += 1) {
-    const turn = await claimNextTurn(workerCtx, 'demo-seed-worker')
-    if (!turn) break
-    await executeTurn(workerCtx, turn)
+    const ran = await dispatchOnce({ db: handle.db, executor, workspace, delivery, now: () => new Date() })
+    if (!ran) break
   }
   await flushOutbox(ctx, ctx.senders, 50)
   const [finalTicket] = await handle.db.select().from(tickets).orderBy(desc(tickets.createdAt)).limit(1)
@@ -193,7 +206,6 @@ if (existingProjects.length === 0) {
   )
 }
 
-// Ensure the demo group has a join link and QR for the invitation flow.
 const [demoProject] = await handle.db.select().from(projects).limit(1)
 if (demoProject) {
   const [channel] = await handle.db
@@ -214,12 +226,16 @@ if (demoProject) {
 }
 
 const app = await buildApp(ctx)
-const demoWorkerCtx: DualWorkerContext = {
-  ...deps,
-  queue: createDbQueue(),
-  ports: { github, git: new FakeGitOps(), runtime: new FakeTurnRuntime({ delayMs: 15 }) },
-}
-const demoWorker = startInlineWorker(demoWorkerCtx, 'demo-inline-worker')
+const demoLoop = startCoreLoop({
+  db: handle.db,
+  model: routerModel,
+  executor,
+  workspace,
+  delivery,
+  now: () => new Date(),
+  intervalMs: 500,
+  log,
+})
 const timers = [
   setInterval(() => {
     void flushOutbox(ctx, ctx.senders, 20).catch((error) => log.warn({ err: error }, 'outbox flush failed'))
@@ -230,7 +246,7 @@ process.stdout.write(`\nSuperagent demo: ${config.PUBLIC_BASE_URL}\n登录页：
 
 async function shutdown(): Promise<void> {
   for (const timer of timers) clearInterval(timer)
-  await demoWorker.stop().catch(() => {})
+  await demoLoop.stop().catch(() => {})
   await app.close().catch(() => {})
   await handle.close().catch(() => {})
   process.exit(0)

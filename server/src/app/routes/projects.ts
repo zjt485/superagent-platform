@@ -20,9 +20,9 @@ import { listAudit } from '../../services/audit.js'
 import { tokensUsedToday, usageSeries } from '../../services/usage.js'
 import { decisions, evaluations, tickets, users } from '../../db/schema.js'
 import { parsePolicy } from '../../domain/policy.js'
-import { overviewCounts, mainSessionView, turnToRun } from '../../dual/views.js'
-import { policyChanged } from '../../dual/engine.js'
-import { policyVersion } from '../../dual/policy.js'
+import { overviewCounts, mainSessionView, turnToRun } from '../../core/views.js'
+import { notifyPolicyChanged } from '../../core/operations.js'
+import { policyVersion } from '../../core/policy.js'
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(80),
@@ -122,7 +122,8 @@ export function registerProjectRoutes(app: FastifyInstance, ctx: AppContext): vo
     await updateProject(ctx, projectId, user, body)
     if (body.policy !== undefined) {
       const after = await getProjectRow(ctx, projectId)
-      await policyChanged(ctx, after, beforeVersion)
+      const afterVersion = policyVersion(parsePolicy(after.policyJson))
+      await notifyPolicyChanged(ctx, after, beforeVersion, afterVersion)
     }
     return { project: await projectBundle(ctx, projectId, user) }
   })

@@ -1,40 +1,31 @@
-/** Standalone Router/Dispatcher worker for CORE_ENABLED deployments. */
+/** Standalone Router/Dispatcher worker for the unified core engine. */
 
 import { githubMode, loadConfig } from './config.js'
 import { loadLocalEnv } from './env.js'
 import { createLogger } from './logger.js'
 import { openDatabase } from './db/client.js'
-import { repos } from './db/schema.js'
-import { createTurnRuntime } from './dual/runtime.js'
+import { createTurnRuntime } from './core/agent/runtime.js'
 import { createGithub } from './github/index.js'
 import { routerModelFromConfig } from './core/router/from-config.js'
 import { GitDeliveryProvider } from './core/worker/delivery.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
-import { GitWorkspaceProvider } from './core/worker/workspace-provider.js'
+import { createDbWorkspaceProvider } from './core/worker/workspace-provider.js'
 import { startCoreLoop } from './core/worker/loop.js'
 import { FakeGitOps } from './worker/fake-git.js'
-import { RealGitOps, gitAuthEnv } from './worker/git.js'
+import { RealGitOps } from './worker/git.js'
 
 loadLocalEnv()
 const config = loadConfig()
 const log = createLogger(config, { role: 'core-worker' })
 const handle = await openDatabase(config)
 
-const repoRows = await handle.db.select().from(repos)
-const fullNameByProject = new Map(repoRows.map((repo) => [repo.projectId, repo.fullName]))
-const token = process.env.GITHUB_TOKEN
-const env = token === undefined ? {} : gitAuthEnv(token, config.GITHUB_WEB_BASE)
-const workspace = new GitWorkspaceProvider({
-  rootDir: config.WORKSPACES_DIR,
-  remoteUrl: (project) => {
-    const fullName = fullNameByProject.get(project.id)
-    if (fullName === undefined) throw new Error(`project ${project.id} has no bound repository`)
-    return `${config.GITHUB_WEB_BASE}/${fullName}.git`
-  },
-  env,
-})
-
 const github = createGithub(config, log)
+const workspace = createDbWorkspaceProvider({
+  db: handle.db,
+  rootDir: config.WORKSPACES_DIR,
+  github,
+  webBase: config.GITHUB_WEB_BASE,
+})
 const delivery = new GitDeliveryProvider({
   db: handle.db,
   git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
@@ -51,6 +42,7 @@ const loop = startCoreLoop({
   delivery,
   now: () => new Date(),
   intervalMs: config.CORE_POLL_INTERVAL_MS,
+  leaseSeconds: config.RUN_LEASE_SECONDS,
   log,
 })
 log.info({ workspaces: config.WORKSPACES_DIR }, 'core worker started')

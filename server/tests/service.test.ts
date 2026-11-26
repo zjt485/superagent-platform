@@ -6,11 +6,14 @@ import { and, count, eq } from 'drizzle-orm'
 import { api, cookieOf, createHarness, type Harness } from './helpers/app.js'
 import { createIm } from '../src/im/index.js'
 import { encryptFeishuPayload, feishuSignature } from '../src/im/feishu-crypto.js'
-import { claimNextTurn } from '../src/dual/sessions.js'
-import { executeTurn, type DualWorkerContext } from '../src/dual/worker.js'
+import { coreTick } from '../src/core/worker/tick.js'
+import { dispatchOnce } from '../src/core/worker/dispatcher.js'
+import { RuntimeExecutor } from '../src/core/worker/runtime-executor.js'
+import { GitDeliveryProvider } from '../src/core/worker/delivery.js'
+import { createDbWorkspaceProvider } from '../src/core/worker/workspace-provider.js'
+import { RuleBasedRouterModel } from '../src/core/router/model.js'
 import { FakeGitOps } from '../src/worker/fake-git.js'
-import { FakeTurnRuntime } from '../src/dual/runtime.js'
-import { createDbQueue } from '../src/queue/index.js'
+import { FakeTurnRuntime } from '../src/core/agent/runtime.js'
 import { flushOutbox } from '../src/services/outbox.js'
 import { loginWithIdentity } from '../src/services/auth.js'
 import { bindChannel, bindRepo, createProject, updateProject } from '../src/services/projects.js'
@@ -20,7 +23,7 @@ import {
   reports,
   sessionTurns,
   tickets,
-  turnEvents,
+  triggers,
 } from '../src/db/schema.js'
 import { createHmac } from 'node:crypto'
 
@@ -36,31 +39,42 @@ afterEach(async () => {
 })
 
 async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Harness> {
-  const dir = await mkdtemp(path.join(tmpdir(), 'dual-service-'))
+  const dir = await mkdtemp(path.join(tmpdir(), 'core-service-'))
   tempDirs.push(dir)
   const harness = await createHarness({ WORKSPACES_DIR: dir, ...overrides })
   harnesses.push(harness)
   return harness
 }
 
-function workerContext(harness: Harness, runtime = new FakeTurnRuntime({ delayMs: 1 })): DualWorkerContext {
-  return {
-    ...harness.ctx,
-    queue: createDbQueue(),
-    ports: { github: harness.ctx.github, git: new FakeGitOps(), runtime },
-  }
-}
-
-async function drain(harness: Harness, max = 12, runtime = new FakeTurnRuntime({ delayMs: 1 })): Promise<string[]> {
-  const ctx = workerContext(harness, runtime)
-  const ids: string[] = []
+async function drain(harness: Harness, max = 12, runtime = new FakeTurnRuntime({ delayMs: 1 })): Promise<number> {
+  const workspace = createDbWorkspaceProvider({
+    db: harness.ctx.db,
+    rootDir: harness.config.WORKSPACES_DIR,
+    github: harness.ctx.github,
+    webBase: harness.config.GITHUB_WEB_BASE,
+  })
+  const delivery = new GitDeliveryProvider({
+    db: harness.ctx.db,
+    git: new FakeGitOps(),
+    github: harness.ctx.github,
+    author: { name: harness.config.GIT_AUTHOR_NAME, email: harness.config.GIT_AUTHOR_EMAIL },
+    webBase: harness.config.GITHUB_WEB_BASE,
+  })
+  const executor = new RuntimeExecutor(runtime)
+  await coreTick({ db: harness.ctx.db, model: new RuleBasedRouterModel(), now: harness.ctx.now, maxThreads: 10 })
+  let countRan = 0
   for (let index = 0; index < max; index += 1) {
-    const turn = await claimNextTurn(ctx, 'service-test-worker')
-    if (!turn) break
-    ids.push(turn.id)
-    await executeTurn(ctx, turn)
+    const ran = await dispatchOnce({
+      db: harness.ctx.db,
+      executor,
+      workspace,
+      delivery,
+      now: harness.ctx.now,
+    })
+    if (!ran) break
+    countRan += 1
   }
-  return ids
+  return countRan
 }
 
 async function devLogin(harness: Harness, name: string) {
@@ -96,7 +110,7 @@ async function activeProject(harness: Harness, cookie: string, input: { name: st
   return projectId
 }
 
-describe('dual-agent service', () => {
+describe('core service', () => {
   it('authenticates, isolates projects, enforces roles and the invite flow', async () => {
     const harness = await makeHarness()
     const alice = await devLogin(harness, 'Alice')
@@ -130,7 +144,7 @@ describe('dual-agent service', () => {
     expect((await api(harness, 'PATCH', `/v1/projects/${a}`, { cookie: bob.cookie, body: { status: 'archived' } })).status).toBe(403)
   })
 
-  it('runs a console ticket through Main/Executor sessions to a PR and closes it on merge', async () => {
+  it('runs a console ticket through Executor to a PR and closes it on merge', async () => {
     const harness = await makeHarness({ GITHUB_WEBHOOK_SECRET: 'github-secret' })
     const alice = await devLogin(harness, 'Alice')
     const projectId = await activeProject(harness, alice.cookie, { name: '交付项目' })
@@ -144,15 +158,14 @@ describe('dual-agent service', () => {
     expect(created.json.ticket.stage).toBe('queued')
 
     const turns = await drain(harness)
-    expect(turns).toHaveLength(1)
+    expect(turns).toBe(1)
     let [ticket] = await harness.ctx.db.select().from(tickets).where(eq(tickets.id, ticketId))
     expect(ticket?.stage).toBe('review')
     expect(ticket?.status).toBe('waiting_review')
     expect(ticket?.prUrl).toContain('/pull/')
     expect((await harness.ctx.db.select().from(reports)).length).toBeGreaterThan(0)
 
-    // Session transcript is persisted for the Executor.
-    const [executorTurn] = harness.ctx.db ? await harness.ctx.db.select().from(sessionTurns).where(eq(sessionTurns.ticketId, ticketId)) : []
+    const [executorTurn] = await harness.ctx.db.select().from(sessionTurns).where(eq(sessionTurns.ticketId, ticketId))
     expect(executorTurn?.kind).toBe('execute')
     const events = await api(harness, 'GET', `/v1/runs/${executorTurn!.id}`, { cookie: alice.cookie })
     expect(events.status).toBe(200)
@@ -181,7 +194,7 @@ describe('dual-agent service', () => {
       csrf: false,
       headers: {
         'x-hub-signature-256': signature,
-        'x-github-delivery': 'dual-delivery-1',
+        'x-github-delivery': 'core-delivery-1',
         'x-github-event': 'pull_request',
         'content-type': 'application/json',
       },
@@ -196,7 +209,7 @@ describe('dual-agent service', () => {
       csrf: false,
       headers: {
         'x-hub-signature-256': signature,
-        'x-github-delivery': 'dual-delivery-1',
+        'x-github-delivery': 'core-delivery-1',
         'x-github-event': 'pull_request',
         'content-type': 'application/json',
       },
@@ -241,7 +254,6 @@ describe('dual-agent service', () => {
     expect((await api(harness, 'POST', `/v1/tickets/${ticketId}/cancel`, { cookie: alice.cookie })).status).toBe(200)
     ;[ticket] = await harness.ctx.db.select().from(tickets).where(eq(tickets.id, ticketId))
     expect(ticket?.stage).toBe('cancelled')
-    // A stopped ticket needs a new request, not a retry.
     expect((await api(harness, 'POST', `/v1/tickets/${ticketId}/retry`, { cookie: alice.cookie })).status).toBe(409)
 
     const failing = await api(harness, 'POST', `/v1/projects/${projectId}/tickets`, {
@@ -262,38 +274,39 @@ describe('dual-agent service', () => {
     expect(ticket?.stage).toBe('review')
   })
 
-  it('keeps thread follow-ups and approvals inside one session without new Evals', async () => {
+  it('creates an active project without requiring a GitHub repo or IM channel', async () => {
     const harness = await makeHarness()
     const alice = await devLogin(harness, 'Alice')
-    const projectId = await activeProject(harness, alice.cookie, { name: '追问项目' })
-    // Console ticket creates an Executor Session; a second turn reuses it.
-    const created = await api(harness, 'POST', `/v1/projects/${projectId}/tickets`, {
+    const createdProject = await api(harness, 'POST', '/v1/projects', {
       cookie: alice.cookie,
-      body: { title: '两轮任务', body: '先完成第一轮。' },
+      body: { name: '纯调研项目' },
     })
-    const ticketId = created.json.ticket.id as string
-    await drain(harness)
-    const [firstTurn] = await harness.ctx.db.select().from(sessionTurns).where(eq(sessionTurns.ticketId, ticketId))
-    const [ticket] = await harness.ctx.db.select().from(tickets).where(eq(tickets.id, ticketId))
-    // Merge then give the executor a follow-up through the same ticket thread is
-    // covered by the Feishu test; here assert the session is stable.
+    expect(createdProject.status).toBe(201)
+    expect(createdProject.json.project.status).toBe('active')
+    expect(createdProject.json.project.readiness.canActivate).toBe(true)
+
+    const projectId = createdProject.json.project.id as string
+    const createdTicket = await api(harness, 'POST', `/v1/projects/${projectId}/tickets`, {
+      cookie: alice.cookie,
+      body: { title: '竞品调研', body: '梳理竞品交互方案。' },
+    })
+    expect(createdTicket.status).toBe(201)
+    expect(await drain(harness)).toBe(1)
+    const [ticket] = await harness.ctx.db.select().from(tickets).where(eq(tickets.id, createdTicket.json.ticket.id))
     expect(ticket?.stage).toBe('review')
-    expect(firstTurn?.kind).toBe('execute')
-    expect((await harness.ctx.db.select({ value: count() }).from(evaluations))[0]?.value).toBe(0)
   })
 })
 
-describe('Feishu dual-agent intake', () => {
+describe('Feishu core intake', () => {
   const ENCRYPT_KEY = 'test-encrypt-key-0123456789abcdef'
 
   async function seed() {
     const harness = await makeHarness()
     harness.ctx.im = createIm(harness.config, harness.ctx.log).adapters
     const alice = await loginWithIdentity(harness.ctx, 'feishu', { externalId: 'ou_alice', name: 'Alice' })
-    const project = await createProject(harness.ctx, alice, { name: '飞书双 Agent' })
+    const project = await createProject(harness.ctx, alice, { name: '飞书 Core' })
     await bindRepo(harness.ctx, project.id, alice, { installationId: '1', owner: 'demo-org', name: 'hello-world' })
     await bindChannel(harness.ctx, project.id, alice, { provider: 'feishu', externalChatId: 'oc_project', name: '项目群' })
-    await updateProject(harness.ctx, project.id, alice, { status: 'active' })
     return { harness, project, alice }
   }
 
@@ -335,32 +348,37 @@ describe('Feishu dual-agent intake', () => {
     })
   }
 
-  it('evaluates an @bot message in the Main Session, then uses one Executor Session for the thread', async () => {
+  it('routes an @bot message through the core Router and attaches thread follow-ups to the same ticket', async () => {
     const { harness } = await seed()
     const first = await post(harness, event({ eventId: 'evt_1', messageId: 'om_1' }), 'evt_1')
     expect(first.status).toBe(200)
     expect(first.json.processed).toBe(1)
     expect(await harness.ctx.db.select().from(tickets)).toHaveLength(0)
-    expect(await harness.ctx.db.select().from(evaluations)).toHaveLength(1)
+    expect(await harness.ctx.db.select().from(triggers)).toHaveLength(1)
     await drain(harness)
     const [ticket] = await harness.ctx.db.select().from(tickets)
     expect(ticket?.title).toBe('修复登录页')
     expect(ticket?.stage).toBe('review')
-    const evaluationsBefore = Number((await harness.ctx.db.select({ value: count() }).from(evaluations))[0]?.value ?? 0)
 
     const replay = await post(harness, event({ eventId: 'evt_1', messageId: 'om_1' }), 'evt_1')
     expect(replay.json.processed).toBe(0)
+
     const follow = await post(harness, event({ eventId: 'evt_2', messageId: 'om_2', text: '补充：只改文案', mention: false, rootId: 'om_1' }), 'evt_2')
     expect(follow.status).toBe(200)
-    expect(Number((await harness.ctx.db.select({ value: count() }).from(evaluations))[0]?.value ?? 0)).toBe(evaluationsBefore)
     await drain(harness)
-    expect((await harness.ctx.db.select().from(tickets))[0]?.stage).toBe('review')
+    const allTickets = await harness.ctx.db.select().from(tickets)
+    expect(allTickets).toHaveLength(1)
+    expect(allTickets[0]?.stage).toBe('review')
+    expect(await harness.ctx.db.select().from(sessionTurns)).toHaveLength(2)
 
     const ignored = await post(harness, event({ eventId: 'evt_3', messageId: 'om_3', text: '普通群聊', mention: false }), 'evt_3')
     expect(ignored.status).toBe(200)
+    await drain(harness)
     expect(await harness.ctx.db.select().from(tickets)).toHaveLength(1)
+
     const outsider = await post(harness, event({ eventId: 'evt_4', messageId: 'om_4', sender: 'ou_bob' }), 'evt_4')
     expect(outsider.status).toBe(200)
+    await drain(harness)
     expect(await harness.ctx.db.select().from(tickets)).toHaveLength(1)
   })
 
@@ -370,13 +388,13 @@ describe('Feishu dual-agent intake', () => {
     await drain(harness)
     const command = await post(harness, event({ eventId: 'evt_c2', messageId: 'om_c2', text: '@_user_1 /status', rootId: 'om_c1' }), 'evt_c2')
     expect(command.status).toBe(200)
-    await drain(harness)
     const replies = await harness.ctx.db.select().from(outboxEvents).where(eq(outboxEvents.kind, 'command'))
     expect(replies.length).toBeGreaterThan(0)
     expect(replies[0]?.payload.text).toContain('修复登录页')
 
     await updateProject(harness.ctx, project.id, alice, { status: 'paused' })
     await post(harness, event({ eventId: 'evt_p', messageId: 'om_p' }), 'evt_p')
+    await drain(harness)
     expect(Number((await harness.ctx.db.select({ value: count() }).from(evaluations))[0]?.value ?? 0)).toBe(1)
     await updateProject(harness.ctx, project.id, alice, { status: 'active' })
   })

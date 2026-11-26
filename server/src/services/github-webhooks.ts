@@ -1,6 +1,6 @@
 import { and, desc, eq } from 'drizzle-orm'
-import type { DualContext } from '../dual/engine.js'
-import { createInput, markClosed, markMerged } from '../dual/engine.js'
+import type { CoreContext } from '../core/operations.js'
+import { deliverTicketInput, markTicketClosed, markTicketMerged } from '../core/operations.js'
 import { audit } from './audit.js'
 import { newId } from '../domain/ids.js'
 import { messages, projects, repos, tickets, type ProjectRow, type TicketRow } from '../db/schema.js'
@@ -10,7 +10,7 @@ import { isUniqueViolation } from '../db/errors.js'
 type Json = Record<string, unknown>
 const asRecord = (value: unknown): Json => (value && typeof value === 'object' ? (value as Json) : {})
 
-async function findTicket(ctx: DualContext, payload: Json, pr: Json): Promise<TicketRow | null> {
+async function findTicket(ctx: CoreContext, payload: Json, pr: Json): Promise<TicketRow | null> {
   const repoFullName = typeof asRecord(payload.repository).full_name === 'string' ? (asRecord(payload.repository).full_name as string) : ''
   const prUrl = typeof pr.html_url === 'string' ? pr.html_url : ''
   const head = typeof asRecord(pr.head).ref === 'string' ? (asRecord(pr.head).ref as string) : ''
@@ -33,13 +33,13 @@ async function findTicket(ctx: DualContext, payload: Json, pr: Json): Promise<Ti
   return null
 }
 
-async function projectOf(ctx: DualContext, projectId: string): Promise<ProjectRow | null> {
+async function projectOf(ctx: CoreContext, projectId: string): Promise<ProjectRow | null> {
   const [project] = await ctx.db.select().from(projects).where(eq(projects.id, projectId))
   return project ?? null
 }
 
 async function recordComment(
-  ctx: DualContext,
+  ctx: CoreContext,
   ticket: TicketRow,
   input: { id: string; body: string; login: string; url?: string },
 ): Promise<void> {
@@ -67,13 +67,13 @@ async function recordComment(
   }
   const project = await projectOf(ctx, ticket.projectId)
   if (project) {
-    await createInput(ctx, project, ticket, null, `PR 评论（${input.login}）：${input.body}`, true, 'person')
+    await deliverTicketInput(ctx, project, ticket, null, `PR 评论（${input.login}）：${input.body}`, true, 'person')
   }
 }
 
 /** Handles the GitHub events the service consumes (FR-09, §4.5). */
 export async function handleGithubWebhook(
-  ctx: DualContext,
+  ctx: CoreContext,
   event: string,
   payload: Json,
   deliveryId: string,
@@ -88,7 +88,7 @@ export async function handleGithubWebhook(
     }
     if (action === 'closed') {
       if (pr.merged === true) {
-        await markMerged(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
+        await markTicketMerged(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
         await audit(ctx, {
           projectId: ticket.projectId,
           action: 'github.pr_merged',
@@ -98,7 +98,7 @@ export async function handleGithubWebhook(
         return { handled: 'merged' }
       }
       if (ticket.stage !== 'done' && ticket.stage !== 'cancelled') {
-        await markClosed(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
+        await markTicketClosed(ctx, ticket.id, typeof pr.html_url === 'string' ? pr.html_url : null)
         await audit(ctx, { projectId: ticket.projectId, action: 'github.pr_closed', target: `ticket:${ticket.id}` })
       }
       return { handled: 'closed' }

@@ -2,11 +2,10 @@ import { spawn } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
-import type { Config } from '../config.js'
-import type { Logger } from '../logger.js'
-import { shortId } from '../domain/ids.js'
-import { ticketTitle } from '../domain/message.js'
-import type { ExecutorReportOutput, ExecutorTurnPacket, MainDecisionOutput, MainTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from './types.js'
+import type { Config } from '../../config.js'
+import type { Logger } from '../../logger.js'
+import { shortId } from '../../domain/ids.js'
+import type { ExecutorReportOutput, ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from './types.js'
 import { TurnCancelledError } from './types.js'
 import { OpenAiTurnRuntime } from './openai.js'
 
@@ -25,12 +24,9 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-/**
- * Deterministic dual-agent runtime for demos/tests. It follows the same wire
- * protocol as the real command runtime so the engine is exercised end to end.
- */
+/** Deterministic runtime for demos and tests following the same Executor report protocol. */
 export class FakeTurnRuntime implements TurnRuntime {
-  readonly name = 'fake-dual'
+  readonly name = 'fake-core'
 
   constructor(private readonly options: { delayMs?: number; executorFail?: boolean } = {}) {}
 
@@ -39,45 +35,17 @@ export class FakeTurnRuntime implements TurnRuntime {
     await input.onEvent({ type: 'turn', message: `${input.role} turn started` })
     await sleep(delay, input.signal)
 
-    if (input.role === 'main') {
-      const packet = input.packet as MainTurnPacket
-      const decisions: MainDecisionOutput['decisions'] = packet.thread.triggers.map((trigger) => {
-        if (trigger.isBot || !trigger.mentionedBot) {
-          return { action: 'ignore' as const, triggerId: trigger.id, reason: 'not an explicit @bot request' }
-        }
-        const title = ticketTitle(trigger.text)
-        return {
-          action: 'accept' as const,
-          triggerId: trigger.id,
-          reason: 'explicit @bot request from a project member',
-          reply: `已接单：${title}`,
-          ticket: {
-            title,
-            body: trigger.text,
-            scope: `完成「${title}」并提交可评审的改动，不得修改项目策略或权限。`,
-            strength: 'explicit' as const,
-            planApproval: (packet.project.policy.planApproval as 'required' | 'auto' | undefined) ?? 'auto',
-          },
-        }
-      })
-      if (decisions.length === 0) {
-        decisions.push({ action: 'ignore', triggerId: 'none', reason: 'empty trigger batch' })
-      }
-      await input.onEvent({ type: 'decision', message: `accepted ${decisions.filter((decision) => decision.action === 'accept').length} trigger(s)` })
-      return { output: { decisions }, tokens: 300, cost: 0.0004 }
-    }
-
     const packet = input.packet as ExecutorTurnPacket
     const planRequired = packet.project.policy.planApproval === 'required'
     if (planRequired && !packet.ticket.planApproved && !packet.ticket.plan) {
       const plan = [
-        `1. 阅读仓库，定位「${packet.ticket.title}」相关代码。`,
+        `1. 阅读工作区，定位「${packet.ticket.title}」相关内容。`,
         '2. 按需求实现改动并补充测试。',
-        '3. 运行仓库现有验证命令。',
-        '4. 提交到 agent 分支并创建 PR。',
+        '3. 运行验证命令确认结果。',
+        '4. 提交到 agent 分支并创建 PR（如已绑定仓库）。',
       ].join('\n')
       await input.onEvent({ type: 'plan', message: plan })
-      const report: ExecutorReportOutput = { status: 'progress', summary: '已生成实施计划，等待 Maintainer 批准。', plan }
+      const report: ExecutorReportOutput = { status: 'waiting', summary: '已生成实施计划，等待 Maintainer 批准。', plan }
       return { output: report, tokens: 320, cost: 0.0004 }
     }
 
@@ -111,14 +79,15 @@ export class FakeTurnRuntime implements TurnRuntime {
     const report: ExecutorReportOutput = {
       status: 'ready',
       summary: `新增 ${relative}，完成「${packet.ticket.title}」。`,
+      changedFiles: [relative],
     }
     return { output: report, tokens: 1200 + Math.floor(input.prompt.length / 4), cost: 0.0018 }
   }
 }
 
-/** Runs an external agent command; the same `.superagent/result.json` contract. */
+/** Runs an external coding CLI / agent command using the `.superagent/result.json` contract. */
 export class ProcessTurnRuntime implements TurnRuntime {
-  readonly name = 'command-dual'
+  readonly name = 'command-core'
 
   constructor(private readonly command: string, private readonly logLimit = 500) {}
 
@@ -240,7 +209,7 @@ export function createTurnRuntime(config: Config, log: Logger): TurnRuntime {
       outputCostPer1M: config.LLM_OUTPUT_COST_PER_1M,
     })
   }
-  if (config.NODE_ENV === 'production') log.warn('fake dual-agent runtime enabled in production')
+  if (config.NODE_ENV === 'production') log.warn('fake core runtime enabled in production')
   return new FakeTurnRuntime()
 }
 

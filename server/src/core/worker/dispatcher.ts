@@ -1,10 +1,11 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { and, asc, desc, eq, isNotNull } from 'drizzle-orm'
+import { and, asc, count, desc, eq, isNotNull, sql } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
 import {
   agentSessions,
+  auditLogs,
   mandates,
   outboxEvents,
   projects,
@@ -12,14 +13,18 @@ import {
   sessionMessages,
   sessionTurns,
   tickets,
+  turnEvents,
+  usage,
   type ProjectRow,
   type TicketInputRow,
   type TicketRow,
   type TurnRow,
 } from '../../db/schema.js'
-import { buildExecutorPrompt } from '../../dual/prompts.js'
-import type { ExecutorTurnPacket } from '../../dual/types.js'
+import { buildExecutorPrompt } from '../agent/prompts.js'
+import type { ExecutorTurnPacket } from '../agent/types.js'
 import { newId } from '../../domain/ids.js'
+import { parsePolicy } from '../../domain/policy.js'
+import { dayKey } from '../../services/usage.js'
 import { nextStage } from '../domain/stage.js'
 import type { Report, TicketStage } from '../domain/types.js'
 import { listUndeliveredInputs, markInputsDelivered } from '../store/inputs.js'
@@ -37,6 +42,7 @@ export interface DispatcherOptions {
   worktreeRoot?: string
   transcriptRoot?: string
   timeoutMs?: number
+  heartbeatMs?: number
   env?: Record<string, string>
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
@@ -58,26 +64,80 @@ async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefine
       .limit(20)
       .for('update', { skipLocked: true })
 
+    const projectCache = new Map<string, ProjectRow | null>()
+    const runningByProject = new Map<string, number>()
+
     for (const candidate of candidates) {
       if (candidate.ticketId === null) continue
-      const [running] = await tx
+      const [runningTicketTurn] = await tx
         .select({ id: sessionTurns.id })
         .from(sessionTurns)
         .where(and(eq(sessionTurns.ticketId, candidate.ticketId), eq(sessionTurns.status, 'running')))
         .limit(1)
-      if (running !== undefined) continue
+      if (runningTicketTurn !== undefined) continue
+
+      let project = projectCache.get(candidate.projectId)
+      if (project === undefined) {
+        const [row] = await tx.select().from(projects).where(eq(projects.id, candidate.projectId))
+        project = row ?? null
+        projectCache.set(candidate.projectId, project)
+      }
+      if (project !== null) {
+        if (project.status !== 'active') continue
+        const policy = parsePolicy(project.policyJson)
+        let runningCount = runningByProject.get(project.id)
+        if (runningCount === undefined) {
+          const [cnt] = await tx
+            .select({ value: count() })
+            .from(sessionTurns)
+            .where(
+              and(
+                eq(sessionTurns.projectId, project.id),
+                eq(sessionTurns.kind, 'execute'),
+                eq(sessionTurns.status, 'running'),
+              ),
+            )
+          runningCount = Number(cnt?.value ?? 0)
+          runningByProject.set(project.id, runningCount)
+        }
+        if (runningCount >= policy.maxConcurrentRuns) continue
+      }
+
       const [claimed] = await tx
         .update(sessionTurns)
         .set({ status: 'running', startedAt: at, heartbeatAt: at })
         .where(eq(sessionTurns.id, candidate.id))
         .returning()
-      return claimed
+      if (claimed !== undefined) {
+        await tx
+          .update(agentSessions)
+          .set({ status: 'running', updatedAt: at })
+          .where(eq(agentSessions.id, claimed.sessionId))
+        return claimed
+      }
     }
     return undefined
   })
 }
 
-function stageForReport(current: TicketStage, report: Report): TicketStage {
+function stageForReport(
+  current: TicketStage,
+  report: Report,
+  options: { planApprovalRequired: boolean; planApproved: boolean; codeChanged: boolean },
+): TicketStage {
+  if (
+    options.planApprovalRequired &&
+    !options.planApproved &&
+    report.plan !== undefined &&
+    report.plan.length > 0 &&
+    (report.status === 'progress' || report.status === 'waiting')
+  ) {
+    try {
+      return nextStage(current, { type: 'waiting', plan: true })
+    } catch {
+      return 'plan_review'
+    }
+  }
   try {
     switch (report.status) {
       case 'progress':
@@ -85,7 +145,7 @@ function stageForReport(current: TicketStage, report: Report): TicketStage {
       case 'waiting':
         return nextStage(current, { type: 'waiting', plan: report.plan !== undefined })
       case 'ready':
-        return nextStage(current, { type: 'ready', codeChanged: (report.changedFiles?.length ?? 0) > 0 })
+        return nextStage(current, { type: 'ready', codeChanged: options.codeChanged })
       case 'blocked':
         return nextStage(current, { type: 'blocked' })
       case 'failed':
@@ -176,12 +236,45 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
   const [ticket] = await options.db.select().from(tickets).where(eq(tickets.id, turn.ticketId))
   if (ticket === undefined) {
     await finishTurn(options.db, turn.id, { status: 'failed', error: 'ticket missing', at })
+    await options.db.update(agentSessions).set({ status: 'idle', updatedAt: at }).where(eq(agentSessions.id, turn.sessionId))
     return true
   }
   const [project] = await options.db.select().from(projects).where(eq(projects.id, ticket.projectId))
   if (project === undefined) {
     await finishTurn(options.db, turn.id, { status: 'failed', error: 'project missing', at })
+    await options.db.update(agentSessions).set({ status: 'idle', updatedAt: at }).where(eq(agentSessions.id, turn.sessionId))
     return true
+  }
+
+  const policy = parsePolicy(project.policyJson)
+  if (policy.dailyTokenBudget > 0) {
+    const [usedRow] = await options.db
+      .select({ tokens: usage.tokens })
+      .from(usage)
+      .where(and(eq(usage.projectId, project.id), eq(usage.day, dayKey(at))))
+    if ((usedRow?.tokens ?? 0) >= policy.dailyTokenBudget) {
+      const reason = `项目今日 Token 预算已用尽（${usedRow?.tokens ?? 0} / ${policy.dailyTokenBudget}）`
+      await finishTurn(options.db, turn.id, { status: 'failed', error: reason, at })
+      await setTicketStage(options.db, ticket.id, 'failed', at)
+      await options.db.update(agentSessions).set({ status: 'idle', updatedAt: at }).where(eq(agentSessions.id, turn.sessionId))
+      if (ticket.channelId !== null) {
+        await options.db
+          .insert(outboxEvents)
+          .values({
+            id: newId(),
+            projectId: project.id,
+            channelId: ticket.channelId,
+            kind: 'failed',
+            dedupeKey: `budget:${turn.id}`,
+            payload: { text: reason },
+            status: 'pending',
+            nextAttemptAt: at,
+            createdAt: at,
+          })
+          .onConflictDoNothing({ target: outboxEvents.dedupeKey })
+      }
+      return true
+    }
   }
 
   const currentStage = (ticket.stage ?? 'queued') as TicketStage
@@ -212,8 +305,43 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
   const inputs = await listUndeliveredInputs(options.db, ticket.id)
   await markInputsDelivered(options.db, inputs.map((input) => input.id), turn.id, at)
   const built = await buildPacket(options.db, project, ticket, turn, inputs)
+  if (inputs.length > 0) {
+    await options.db.insert(sessionMessages).values({
+      id: newId(),
+      projectId: project.id,
+      sessionId: turn.sessionId,
+      turnId: turn.id,
+      role: 'user',
+      content: inputs.map((input) => `[${input.source}] ${input.text}`).join('\n').slice(0, 20_000),
+      createdAt: at,
+    })
+  }
+
+  const controller = new AbortController()
+  const heartbeatIntervalMs = options.heartbeatMs ?? 15_000
+  const heartbeatTimer =
+    heartbeatIntervalMs > 0
+      ? setInterval(() => {
+          void options.db
+            .update(sessionTurns)
+            .set({ heartbeatAt: options.now() })
+            .where(and(eq(sessionTurns.id, turn.id), eq(sessionTurns.status, 'running')))
+            .catch(() => {})
+        }, heartbeatIntervalMs)
+      : null
+  const cancelTimer = setInterval(() => {
+    void options.db
+      .select({ status: sessionTurns.status, cancelRequestedAt: sessionTurns.cancelRequestedAt })
+      .from(sessionTurns)
+      .where(eq(sessionTurns.id, turn.id))
+      .then(([row]) => {
+        if (row?.status === 'cancelled' || row?.cancelRequestedAt !== null) controller.abort()
+      })
+      .catch(() => {})
+  }, 1500)
 
   let report: Report
+  let cancelled = false
   try {
     report = await options.executor.run({
       turnId: turn.id,
@@ -232,16 +360,50 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       model: turn.model ?? null,
       prompt: built.prompt,
       packet: built.packet,
-      timeoutMs: options.timeoutMs ?? 45 * 60_000,
+      timeoutMs: options.timeoutMs ?? policy.maxRunMinutes * 60_000,
+      signal: controller.signal,
       ...(options.env === undefined ? {} : { env: options.env }),
+      onEvent: async (event) => {
+        await options.db
+          .insert(turnEvents)
+          .values({
+            projectId: project.id,
+            turnId: turn.id,
+            type: event.type.slice(0, 80),
+            message: event.message === undefined ? null : event.message.slice(0, 4000),
+            payload: event.payload ?? null,
+            createdAt: options.now(),
+          })
+          .catch(() => {})
+      },
     })
   } catch (error) {
-    report = {
-      status: 'failed',
-      summary: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+    if (controller.signal.aborted) {
+      cancelled = true
+      report = { status: 'dropped', summary: '工单已取消' }
+    } else {
+      report = {
+        status: 'failed',
+        summary: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+      }
     }
+  } finally {
+    if (heartbeatTimer !== null) clearInterval(heartbeatTimer)
+    clearInterval(cancelTimer)
   }
 
+  const finishedAt = options.now()
+
+  if (cancelled) {
+    await finishTurn(options.db, turn.id, { status: 'cancelled', error: 'cancelled', at: finishedAt })
+    await options.db
+      .update(agentSessions)
+      .set({ status: 'idle', lastTurnAt: finishedAt, updatedAt: finishedAt })
+      .where(eq(agentSessions.id, turn.sessionId))
+    return true
+  }
+
+  let deliveredCode = false
   if (report.status === 'ready' && options.delivery !== undefined) {
     try {
       const delivered = await options.delivery.deliver({
@@ -249,8 +411,9 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
         ticket,
         report,
         worktreePath,
-        at,
+        at: finishedAt,
       })
+      deliveredCode = delivered.committed || delivered.prUrl !== null
       report = {
         ...report,
         ...(delivered.branch === null ? {} : { branch: delivered.branch }),
@@ -260,7 +423,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
         await setTicketDelivery(options.db, ticket.id, {
           branch: delivered.branch,
           prUrl: delivered.prUrl,
-          at,
+          at: finishedAt,
         })
       }
     } catch (error) {
@@ -271,16 +434,31 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     }
   }
 
+  const tokens = report.tokens ?? 0
+  const cost = report.cost ?? 0
+  const turnStatus = report.status === 'failed' ? 'failed' : 'succeeded'
   await finishTurn(options.db, turn.id, {
-    status: report.status === 'failed' ? 'failed' : 'succeeded',
+    status: turnStatus,
     result: report,
     error: report.status === 'failed' ? report.summary : null,
-    tokens: report.tokens ?? 0,
-    cost: report.cost ?? 0,
-    at,
+    tokens,
+    cost,
+    at: finishedAt,
   })
+
+  await options.db.insert(auditLogs).values({
+    projectId: project.id,
+    actorId: null,
+    actorLabel: 'core-worker',
+    action: `turn.${turnStatus}`,
+    target: `turn:${turn.id}`,
+    metadata: { ticketId: ticket.id, status: report.status, tokens },
+    createdAt: finishedAt,
+  })
+
+  const reportId = newId()
   await options.db.insert(reports).values({
-    id: newId(),
+    id: reportId,
     projectId: project.id,
     ticketId: ticket.id,
     assignmentId: null,
@@ -291,31 +469,76 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     attentionQuestion: report.attentionQuestion ?? null,
     branch: report.branch ?? null,
     prUrl: report.prUrl ?? null,
-    tokens: report.tokens ?? 0,
-    cost: report.cost ?? 0,
+    tokens,
+    cost,
     raw: report as unknown as Record<string, unknown>,
-    createdAt: at,
+    createdAt: finishedAt,
   })
-  await setTicketStage(options.db, ticket.id, stageForReport(runningStage, report), at)
+
+  const next = stageForReport(runningStage, report, {
+    planApprovalRequired: policy.planApproval === 'required',
+    planApproved: ticket.planApprovedAt !== null,
+    codeChanged: deliveredCode || (report.changedFiles?.length ?? 0) > 0,
+  })
+
+  await setTicketStage(options.db, ticket.id, next, finishedAt)
+  await options.db
+    .update(tickets)
+    .set({
+      lastRunId: turn.id,
+      lastReportId: reportId,
+      ...(report.plan !== undefined && report.plan.length > 0 ? { plan: report.plan } : {}),
+      updatedAt: finishedAt,
+    })
+    .where(eq(tickets.id, ticket.id))
+
+  await options.db.insert(sessionMessages).values({
+    id: newId(),
+    projectId: project.id,
+    sessionId: turn.sessionId,
+    turnId: turn.id,
+    role: 'assistant',
+    content: (report.summary || report.status).slice(0, 20_000),
+    createdAt: finishedAt,
+  })
 
   await options.db
-    .insert(outboxEvents)
-    .values({
-      id: newId(),
-      projectId: project.id,
-      channelId: ticket.channelId,
-      kind: 'reply',
-      dedupeKey: `report:${turn.id}`,
-      payload: { text: report.summary.length > 0 ? report.summary : `[${ticket.shortName ?? ticket.id}] ${report.status}` },
-      status: 'pending',
-      nextAttemptAt: at,
-      createdAt: at,
+    .insert(usage)
+    .values({ id: newId(), projectId: project.id, day: dayKey(finishedAt), runs: 1, tokens, cost })
+    .onConflictDoUpdate({
+      target: [usage.projectId, usage.day],
+      set: {
+        runs: sql`${usage.runs} + 1`,
+        tokens: sql`${usage.tokens} + ${tokens}`,
+        cost: sql`${usage.cost} + ${cost}`,
+      },
     })
-    .onConflictDoNothing({ target: outboxEvents.dedupeKey })
+
+  if (ticket.channelId !== null) {
+    const outboxText = report.prUrl
+      ? `PR 已创建：${report.prUrl}\n${report.summary}`
+      : report.summary.length > 0
+        ? report.summary
+        : `[${ticket.shortName ?? ticket.id}] ${report.status}`
+    await options.db
+      .insert(outboxEvents)
+      .values({
+        id: newId(),
+        projectId: project.id,
+        channelId: ticket.channelId,
+        kind: report.prUrl ? 'pr' : 'reply',
+        dedupeKey: `report:${turn.id}`,
+        payload: { text: outboxText },
+        status: 'pending',
+        nextAttemptAt: finishedAt,
+        createdAt: finishedAt,
+      })
+      .onConflictDoNothing({ target: outboxEvents.dedupeKey })
+  }
 
   await options.db
     .update(agentSessions)
-    .set({ status: 'idle', lastTurnAt: at, updatedAt: at })
+    .set({ status: 'idle', lastTurnAt: finishedAt, updatedAt: finishedAt })
     .where(eq(agentSessions.id, turn.sessionId))
 
   return true

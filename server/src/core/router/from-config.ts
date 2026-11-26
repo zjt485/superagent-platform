@@ -14,5 +14,7 @@ export function routerModelFromConfig(config: Config): RouterModel {
     apiKey: config.LLM_API_KEY,
     model: config.LLM_MODEL,
     temperature: 0.1,
+    inputCostPer1M: config.LLM_INPUT_COST_PER_1M,
+    outputCostPer1M: config.LLM_OUTPUT_COST_PER_1M,
   })
 }

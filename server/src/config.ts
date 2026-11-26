@@ -96,13 +96,11 @@ export const configSchema = z
     WORKER_POLL_INTERVAL_MS: integer(500, 50),
     RUN_LEASE_SECONDS: integer(120, 30),
     /**
-     * Development/single-node convenience: run the worker pipeline inside the
-     * API process. Never allowed in production; the control plane must not
-     * execute repository code.
+     * Development/single-node convenience: run the core Router/Dispatcher loop
+     * inside the API process. Never allowed in production; the control plane
+     * must not execute repository code.
      */
     INLINE_WORKER: boolean(false),
-    /** Route new messages through the agentd-style core instead of dual intake. */
-    CORE_ENABLED: boolean(false),
     CORE_ROUTER: z.enum(['rule', 'llm']).default('rule'),
     CORE_POLL_INTERVAL_MS: integer(1000, 50),
 

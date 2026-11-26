@@ -86,9 +86,17 @@ export interface DecisionItem {
   payload?: Record<string, unknown>
 }
 
+export interface RouterUsage {
+  promptTokens: number
+  outputTokens: number
+  totalTokens: number
+  cost?: number
+}
+
 export interface RouterOutput {
   items: DecisionItem[]
   summary: string
+  usage?: RouterUsage
 }
 
 export interface Report {

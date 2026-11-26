@@ -1,3 +1,4 @@
+import { stripMentions } from '../../domain/message.js'
 import type { RouterOutput } from '../domain/types.js'
 import type { BoardProject, BoardTicket, BoardTrigger } from './board.js'
 
@@ -18,7 +19,7 @@ const TASK_PATTERN = /改|修|加|做|实现|新增|删除|重构|优化|部署|
 const SHORT_NAME_PATTERN = /\bt-[a-z0-9]{6}\b/i
 
 function titleOf(text: string): string {
-  const normalized = text.replace(/\s+/g, ' ').trim()
+  const normalized = stripMentions(text).replace(/\s+/g, ' ').trim()
   return normalized.length > 80 ? `${normalized.slice(0, 80)}…` : normalized
 }
 
@@ -28,7 +29,7 @@ export class RuleBasedRouterModel implements RouterModel {
 
   async decide(context: RouterDecisionContext): Promise<RouterOutput> {
     const items = context.batch.map((trigger) => {
-      const text = trigger.text.trim()
+      const text = stripMentions(trigger.text).trim()
       if (text.startsWith('/')) {
         return {
           triggerId: trigger.id,
@@ -38,13 +39,30 @@ export class RuleBasedRouterModel implements RouterModel {
       }
 
       const shortName = text.match(SHORT_NAME_PATTERN)?.[0]?.toLowerCase()
-      const ticket = context.tickets.find((candidate) => candidate.shortName.toLowerCase() === shortName)
-      if (ticket !== undefined) {
+      const namedTicket = context.tickets.find((candidate) => candidate.shortName.toLowerCase() === shortName)
+      if (namedTicket !== undefined) {
         return {
           triggerId: trigger.id,
           action: 'attach' as const,
-          ticketId: ticket.id ?? ticket.shortName,
-          reason: `rule: names open ticket ${ticket.shortName}`,
+          ticketId: namedTicket.id ?? namedTicket.shortName,
+          reason: `rule: names open ticket ${namedTicket.shortName}`,
+        }
+      }
+
+      if (trigger.address === 'ambient') {
+        if (context.project.allowThreadReplies && context.tickets.length === 1) {
+          const only = context.tickets[0]!
+          return {
+            triggerId: trigger.id,
+            action: 'attach' as const,
+            ticketId: only.id ?? only.shortName,
+            reason: `rule: thread follow-up on ${only.shortName}`,
+          }
+        }
+        return {
+          triggerId: trigger.id,
+          action: 'ignore' as const,
+          reason: 'rule: ambient message without active ticket',
         }
       }
 

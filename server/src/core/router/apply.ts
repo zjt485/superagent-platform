@@ -17,7 +17,7 @@ import type { RouterOutput, TicketStage } from '../domain/types.js'
 import { insertDecisions } from '../store/decisions.js'
 import { insertTicketInput } from '../store/inputs.js'
 import { ensureExecutorSession } from '../store/sessions.js'
-import { insertTicket, setTicketStage } from '../store/tickets.js'
+import { insertTicket, getTicketByShortName, setTicketStage } from '../store/tickets.js'
 import { insertTurn, nextTurnSeq } from '../store/turns.js'
 import { setTriggerDisposition, setTriggerEvaluation } from '../store/triggers.js'
 import { validateRouterOutput } from './output.js'
@@ -57,6 +57,23 @@ function isUniqueViolation(error: unknown): boolean {
   )
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+async function resolveTargetTicket(
+  db: Database,
+  projectId: string,
+  ref: string,
+) {
+  if (UUID_PATTERN.test(ref)) {
+    const [byId] = await db
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.id, ref), eq(tickets.projectId, projectId)))
+    if (byId !== undefined) return byId
+  }
+  return (await getTicketByShortName(db, projectId, ref)) ?? (await getTicketByShortName(db, projectId, ref.toLowerCase()))
+}
+
 /** Apply a validated Router batch in one transaction. Replays are idempotent. */
 export async function applyRouterOutput(
   db: Database,
@@ -75,6 +92,15 @@ export async function applyRouterOutput(
     const seen = new Set(existing.map((row) => row.triggerId))
     const fresh = input.output.items.filter((item) => !seen.has(item.triggerId))
 
+    const resolvedTargets = new Map<string, typeof tickets.$inferSelect>()
+    for (const item of fresh) {
+      if (item.action !== 'attach' && item.action !== 'stop') continue
+      if (item.ticketId === undefined) throw new RouterApplyError(`decision ${item.triggerId} has no ticketId`)
+      const target = await resolveTargetTicket(d, input.projectId, item.ticketId)
+      if (target === undefined) throw new RouterApplyError(`unknown ticket: ${item.ticketId}`)
+      resolvedTargets.set(item.triggerId, target)
+    }
+
     await insertDecisions(
       d,
       fresh.map((item) => ({
@@ -84,7 +110,7 @@ export async function applyRouterOutput(
         triggerId: item.triggerId,
         threadKey: input.threadKey,
         action: item.action,
-        ticketId: item.ticketId ?? null,
+        ticketId: resolvedTargets.get(item.triggerId)?.id ?? null,
         title: item.title ?? null,
         reason: item.reason,
         confidence: item.confidence ?? null,
@@ -208,10 +234,9 @@ export async function applyRouterOutput(
         continue
       }
 
-      const ticketId = item.ticketId
-      if (ticketId === undefined) throw new RouterApplyError(`decision ${item.triggerId} has no ticketId`)
-      const [ticket] = await tx.select().from(tickets).where(eq(tickets.id, ticketId))
-      if (ticket === undefined) throw new RouterApplyError(`unknown ticket: ${ticketId}`)
+      const ticket = resolvedTargets.get(item.triggerId)
+      if (ticket === undefined) throw new RouterApplyError(`unknown ticket: ${item.ticketId ?? ''}`)
+      const ticketId = ticket.id
 
       if (item.action === 'stop') {
         await setTicketStage(d, ticketId, 'cancelled', input.at)

@@ -22,7 +22,7 @@ import { insertTicketInput } from '../../src/core/store/inputs.js'
 import { dispatchOnce } from '../../src/core/worker/dispatcher.js'
 import { FakeExecutor } from '../../src/core/worker/fake-executor.js'
 import { RuntimeExecutor } from '../../src/core/worker/runtime-executor.js'
-import type { ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from '../../src/dual/types.js'
+import type { ExecutorTurnPacket, TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from '../../src/core/agent/types.js'
 
 let handle: DatabaseHandle
 

@@ -30,12 +30,35 @@ export interface CoreCommandResult {
 }
 
 async function ticketsForThread(input: CoreCommandInput): Promise<TicketRow[]> {
+  const arg = input.command.arg?.trim()
+  if (arg) {
+    const byShort = await input.db
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.projectId, input.projectId), eq(tickets.shortName, arg.toLowerCase())))
+      .orderBy(desc(tickets.updatedAt))
+    if (byShort.length > 0) return byShort
+  }
+
   const conditions = [
     eq(tickets.projectId, input.projectId),
     eq(tickets.threadKey, input.threadKey),
     input.channelId === null ? isNull(tickets.channelId) : eq(tickets.channelId, input.channelId),
   ]
-  return input.db.select().from(tickets).where(and(...conditions)).orderBy(desc(tickets.updatedAt))
+  const inThread = await input.db.select().from(tickets).where(and(...conditions)).orderBy(desc(tickets.updatedAt))
+  if (inThread.length > 0) return inThread
+
+  // Providers without native threads (e.g. WeCom) issue a fresh threadKey per
+  // message; fall back to the latest ticket in the same bound channel.
+  if (input.channelId !== null) {
+    return input.db
+      .select()
+      .from(tickets)
+      .where(and(eq(tickets.projectId, input.projectId), eq(tickets.channelId, input.channelId)))
+      .orderBy(desc(tickets.updatedAt))
+      .limit(5)
+  }
+  return []
 }
 
 async function reply(input: CoreCommandInput, ticketId: string | null, text: string): Promise<void> {
@@ -45,7 +68,7 @@ async function reply(input: CoreCommandInput, ticketId: string | null, text: str
       id: newId(),
       projectId: input.projectId,
       channelId: input.channelId,
-      kind: 'reply',
+      kind: 'command',
       dedupeKey: input.dedupeKey ?? `cmd:${newId()}`,
       payload: { text },
       status: 'pending',

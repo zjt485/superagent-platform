@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { OpenAiTurnRuntime } from '../src/dual/openai.js'
-import type { ExecutorTurnPacket, MainTurnPacket, TurnRuntimeInput } from '../src/dual/types.js'
+import { OpenAiTurnRuntime } from '../src/core/agent/openai.js'
+import type { ExecutorTurnPacket, MainTurnPacket, TurnRuntimeInput } from '../src/core/agent/types.js'
 
 const dirs: string[] = []
 afterEach(async () => {

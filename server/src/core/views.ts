@@ -6,9 +6,12 @@ import {
   agentSessions,
   approvals,
   assignments,
+  decisions,
+  evaluations,
   mandates,
   messages,
   reports,
+  sessionMessages,
   sessionTurns,
   ticketInputs,
   ticketSubscriptions,
@@ -17,7 +20,6 @@ import {
   type TicketRow,
 } from '../db/schema.js'
 import type { TicketStatus } from '../domain/status.js'
-import { recentTranscript } from './sessions.js'
 
 export interface TicketFilter {
   status?: TicketStatus
@@ -26,6 +28,16 @@ export interface TicketFilter {
   limit?: number
   offset?: number
   requesterId?: string
+}
+
+async function recentTranscript(deps: Deps, sessionId: string, limit = 20): Promise<{ role: string; content: string }[]> {
+  const rows = await deps.db
+    .select({ role: sessionMessages.role, content: sessionMessages.content })
+    .from(sessionMessages)
+    .where(eq(sessionMessages.sessionId, sessionId))
+    .orderBy(desc(sessionMessages.createdAt))
+    .limit(limit)
+  return rows.reverse()
 }
 
 export async function listTicketsView(deps: Deps, projectId: string, filter: TicketFilter = {}) {
@@ -48,7 +60,7 @@ export async function listTicketsView(deps: Deps, projectId: string, filter: Tic
   return { items: rows, total: Number(total?.value ?? 0), limit, offset: filter.offset ?? 0 }
 }
 
-/** Maps a dual-agent turn into the `runs` shape the current console expects. */
+/** Maps a core session turn into the `runs` shape the console expects. */
 export function turnToRun(turn: typeof sessionTurns.$inferSelect) {
   return {
     id: turn.id,
@@ -57,7 +69,7 @@ export function turnToRun(turn: typeof sessionTurns.$inferSelect) {
     kind: turn.kind === 'eval' ? ('plan' as const) : ('execute' as const),
     status: turn.status,
     workerId: null,
-    attempt: 0,
+    attempt: turn.seq ?? 0,
     turnKind: turn.kind,
     result: turn.result,
     error: turn.error,
@@ -122,14 +134,77 @@ export async function runDetailView(deps: Deps, turnId: string) {
   return { run: turnToRun(turn), events, turn }
 }
 
+/**
+ * Compatibility projection for the legacy `/main-session` console tab:
+ * surfaces core Router runs (`evaluations` + `decisions`) when no legacy main
+ * session exists.
+ */
 export async function mainSessionView(deps: Deps, projectId: string) {
-  const [session] = await deps.db
+  const runs = await deps.db
     .select()
-    .from(agentSessions)
-    .where(and(eq(agentSessions.projectId, projectId), eq(agentSessions.role, 'main')))
-  if (!session) return { session: null, transcript: [], turns: [] }
-  const turns = await deps.db.select().from(sessionTurns).where(eq(sessionTurns.sessionId, session.id)).orderBy(desc(sessionTurns.createdAt)).limit(50)
-  return { session, transcript: await recentTranscript(deps, session.id, 40), turns: turns.map(turnToRun) }
+    .from(evaluations)
+    .where(eq(evaluations.projectId, projectId))
+    .orderBy(desc(evaluations.createdAt))
+    .limit(30)
+  if (runs.length === 0) return { session: null, transcript: [], turns: [] }
+
+  const runIds = runs.map((run) => run.id)
+  const decisionRows = await deps.db
+    .select()
+    .from(decisions)
+    .where(inArray(decisions.runId, runIds))
+    .orderBy(desc(decisions.decidedAt))
+  const decisionsByRun = new Map<string, typeof decisionRows>()
+  for (const row of decisionRows) {
+    const list = decisionsByRun.get(row.runId) ?? []
+    list.push(row)
+    decisionsByRun.set(row.runId, list)
+  }
+
+  const latest = runs[0]!
+  return {
+    session: {
+      id: latest.id,
+      projectId,
+      role: 'main' as const,
+      ticketId: null,
+      status: latest.status === 'running' ? 'running' : 'idle',
+      model: latest.model ?? 'router',
+      preset: 'core-router',
+      createdAt: runs[runs.length - 1]!.createdAt,
+      lastTurnAt: latest.endedAt ?? latest.startedAt ?? latest.createdAt,
+    },
+    transcript: [...runs].reverse().map((run) => ({
+      role: 'assistant',
+      content: JSON.stringify(
+        (decisionsByRun.get(run.id) ?? []).map((item) => ({
+          action: item.action,
+          triggerId: item.triggerId,
+          reason: item.reason,
+          ...(item.title ? { ticket: { title: item.title } } : {}),
+        })),
+      ),
+    })),
+    turns: runs.map((run) => ({
+      id: run.id,
+      projectId: run.projectId,
+      ticketId: '',
+      kind: 'plan' as const,
+      status: run.status === 'decided' ? ('succeeded' as const) : run.status === 'unavailable' ? ('failed' as const) : ('running' as const),
+      workerId: null,
+      attempt: 1,
+      turnKind: 'eval' as const,
+      result: { summary: run.summary },
+      error: run.reason,
+      tokens: (run.promptTokens ?? 0) + (run.outputTokens ?? 0),
+      cost: 0,
+      branch: null,
+      prUrl: null,
+      startedAt: run.startedAt,
+      endedAt: run.endedAt,
+      createdAt: run.createdAt,
+    })),
+  }
 }
 
 export async function overviewCounts(deps: Deps, projectId: string) {

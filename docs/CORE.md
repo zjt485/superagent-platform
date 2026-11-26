@@ -1,51 +1,58 @@
 # Core Router / Worker
 
-The platform can now run the agentd-style Router/Worker core instead of the
-legacy Main/Executor sessions. The core is additive: `dual/` stays until the
-migration is finished.
+The platform runs on the unified Router / Dispatcher core (`server/src/core/`).
+The legacy `dual/` Main/Executor session engine has been removed.
 
-## Enable
+## Configuration
 
 ```bash
-CORE_ENABLED=true
 # rule (default) or llm
 CORE_ROUTER=rule
 CORE_POLL_INTERVAL_MS=1000
+# fake | command | openai
+AGENT_RUNTIME=openai
 ```
 
-With `CORE_ENABLED=true`, Feishu/WeCom messages on a bound project chat are
-written to `triggers` and processed by the core loop. Commands are handled by
+Feishu/WeCom messages on a bound project chat are written to `triggers` and
+processed by the core Router loop. Commands are handled deterministically by
 `core/commands.ts` (`/status`, `/approve`, `/cancel`, `/retry`, `/help`).
 
-For `CORE_ROUTER=llm`, the Router uses the OpenAI-compatible settings
-`LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`.
+For `CORE_ROUTER=llm`, the Router uses `LLM_BASE_URL`, `LLM_API_KEY`, and
+`LLM_MODEL`, and records prompt/output token usage into `evaluations` and the
+daily `usage` table.
 
 ## Processes
 
-- `pnpm core:worker` runs the standalone Router + Dispatcher worker.
-- The API process runs the same loop when `CORE_ENABLED=true` and
-  `INLINE_WORKER` is not required. Do not run the legacy worker against the
-  same database in core mode; both consume `session_turns`.
-- `pnpm dev:api` plus `pnpm core:worker` is the recommended local split.
+- `pnpm dev:worker` / `pnpm core:worker` runs the standalone Router + Dispatcher
+  worker (including dynamic workspace provisioning, concurrency/budget checks,
+  heartbeat updates, and stale turn reaping).
+- For local single-process development, set `INLINE_WORKER=true` on `pnpm dev:api`.
+  (`INLINE_WORKER=true` is rejected when `NODE_ENV=production`.)
+- `pnpm dev:api` plus `pnpm dev:worker` is the recommended local split.
 
-## Local repositories
+## Optional & Local Repositories
 
-A project can bind a local git directory instead of GitHub:
+Projects activate immediately on creation without requiring a bound GitHub
+repository or IM channel:
+
+- **No bound repo**: each ticket runs in an isolated scratch workspace under
+  `WORKSPACES_DIR/tickets/<ticketId>`.
+- **Local git repo**: bind an absolute local git directory via:
 
 ```bash
 POST /v1/projects/:id/local-repo
 { "path": "D:/code/my-project", "defaultBranch": "main" }
 ```
 
-The path must be absolute and a git work tree. Core mirrors it under
-`WORKSPACES_DIR/projects/<projectId>/repo.git`, creates one worktree per ticket,
-and commits the `agent/*` branch without pushing or opening a PR. The GitHub
-repo binding and PR delivery remain available for GitHub-backed projects.
+Core mirrors it under `WORKSPACES_DIR/projects/<projectId>/repo.git`, creates
+one worktree per ticket, and commits the `agent/*` branch without pushing or
+opening a PR.
+- **GitHub repo**: uses GitHub App installation tokens, mirrors the repo,
+  pushes `agent/*`, and opens a PR.
 
 ## API
 
-- `POST /internal/core/triggers` — feed a trigger manually (Bearer
-  `INTERNAL_TOKEN`).
+- `POST /internal/core/triggers` — feed a trigger manually (Bearer `INTERNAL_TOKEN`).
 - `POST /internal/core/tick` — run one Router sweep manually.
 - `GET /v1/projects/:id/router-runs` — Router runs + per-trigger decisions.
 
@@ -55,16 +62,3 @@ repo binding and PR delivery remain available for GitHub-backed projects.
 pnpm --filter @superagent/server exec vitest run tests/core
 pnpm check
 ```
-
-The core suite covers the stage machine, Router board/output/apply/flush,
-intake, dispatch, worktree/mirror, PR delivery, local repositories, commands,
-multi-project isolation and the LLM Router.
-
-## Not migrated yet
-
-- Per-turn fork of the agentd tool loop (the worker currently uses the
-  platform `TurnRuntime`; `command` mode already spawns a child).
-- Per-project `CORE_ENABLED` (the switch is global).
-- Project-level concurrency/token budget in the core Dispatcher.
-- Console UI for Router runs / turn details.
-- Data migration from `dual/` and removal of the legacy tables.

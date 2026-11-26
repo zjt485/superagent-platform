@@ -3,8 +3,8 @@ import { z } from 'zod'
 import type { AppContext } from '../context.js'
 import { parseBody, parseQuery, queryOf, requireUser, uuidParam } from '../../http/helpers.js'
 import { requireProjectAccess } from '../../services/access.js'
-import { createAcceptedTicket, queueExecutorTurn, approvePlan, stopTicket, retryTicket } from '../../dual/engine.js'
-import { listTicketsView, ticketDetailView, runDetailView } from '../../dual/views.js'
+import { approveTicketPlan, createConsoleTicket, retryCoreTicket, stopCoreTicket } from '../../core/operations.js'
+import { listTicketsView, ticketDetailView, runDetailView } from '../../core/views.js'
 import { channels, tickets } from '../../db/schema.js'
 import { and, eq } from 'drizzle-orm'
 import { forbidden, notFound } from '../../errors.js'
@@ -52,18 +52,15 @@ async function createForProject(
         .limit(1)
   const bodyText = body.body.trim()
   const title = body.title?.trim() || bodyText.split('\n')[0]?.slice(0, 120) || '未命名需求'
-  const ticket = await createAcceptedTicket(ctx, {
+  const { ticket, turnId } = await createConsoleTicket(ctx, {
     project: access.project,
     channel: channel ?? null,
-    trigger: null,
     actor: { id: user.id, name: user.name },
     title,
     body: bodyText,
     scope: `完成「${title}」并提交可评审的改动，不得修改项目策略或权限。`,
-    strength: 'explicit',
     priority: body.priority,
   })
-  const turnId = await queueExecutorTurn(ctx, ticket, 'console')
   return { ticket, turnId, ...(turnId ? {} : { warning: '工单已创建，但未排入 Executor：项目预算或状态不允许启动新的 Run。' }) }
 }
 
@@ -110,7 +107,7 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
     const body = parseBody(actionSchema, request)
     const ticketId = uuidParam(request, 'ticketId')
-    const ticket = await approvePlan(ctx, projectId, ticketId, user, body.comment)
+    const ticket = await approveTicketPlan(ctx, projectId, ticketId, user, body.comment)
     return { ticket }
   })
 
@@ -118,7 +115,7 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
-    const ticket = await stopTicket(ctx, projectId, uuidParam(request, 'ticketId'), user, 'console')
+    const ticket = await stopCoreTicket(ctx, projectId, uuidParam(request, 'ticketId'), user, 'console')
     return { ticket }
   })
 
@@ -126,7 +123,7 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     const user = requireUser(request)
     const projectId = uuidParam(request)
     await requireProjectAccess(ctx, projectId, user.id, user.isAdmin, 'maintainer')
-    const ticket = await retryTicket(ctx, projectId, uuidParam(request, 'ticketId'), user)
+    const ticket = await retryCoreTicket(ctx, projectId, uuidParam(request, 'ticketId'), user)
     return { ticket }
   })
 
@@ -160,21 +157,21 @@ export function registerTicketRoutes(app: FastifyInstance, ctx: AppContext): voi
     const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
     const body = parseBody(actionSchema, request)
-    return { ticket: await approvePlan(ctx, ticket.projectId, ticket.id, user, body.comment) }
+    return { ticket: await approveTicketPlan(ctx, ticket.projectId, ticket.id, user, body.comment) }
   })
 
   app.post('/v1/tickets/:id/cancel', async (request) => {
     const user = requireUser(request)
     const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
-    return { ticket: await stopTicket(ctx, ticket.projectId, ticket.id, user, 'console') }
+    return { ticket: await stopCoreTicket(ctx, ticket.projectId, ticket.id, user, 'console') }
   })
 
   app.post('/v1/tickets/:id/retry', async (request) => {
     const user = requireUser(request)
     const ticket = await ticketForAccess(ctx, uuidParam(request))
     await requireProjectAccess(ctx, ticket.projectId, user.id, user.isAdmin, 'maintainer')
-    return { ticket: await retryTicket(ctx, ticket.projectId, ticket.id, user) }
+    return { ticket: await retryCoreTicket(ctx, ticket.projectId, ticket.id, user) }
   })
 
   app.get('/v1/runs/:id', async (request) => {

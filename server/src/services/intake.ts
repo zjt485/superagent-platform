@@ -18,7 +18,7 @@ import {
   type MessageRow,
 } from '../db/schema.js'
 import { isUniqueViolation } from '../db/errors.js'
-import { receiveTrigger, type DualContext, type ReceiveResult } from '../dual/engine.js'
+import type { CoreContext } from '../core/operations.js'
 import { receiveCoreTrigger, type CoreIntakeResult } from '../core/intake.js'
 import { handleCoreCommand } from '../core/commands.js'
 
@@ -31,7 +31,7 @@ export interface IngestResult {
 }
 
 export async function registerDelivery(
-  deps: DualContext,
+  deps: CoreContext,
   provider: string,
   deliveryId: string,
   eventType: string,
@@ -54,14 +54,14 @@ export async function registerDelivery(
   }
 }
 
-export async function forgetDelivery(deps: DualContext, provider: string, deliveryId: string): Promise<void> {
+export async function forgetDelivery(deps: CoreContext, provider: string, deliveryId: string): Promise<void> {
   await deps.db
     .delete(webhookDeliveries)
     .where(and(eq(webhookDeliveries.provider, provider), eq(webhookDeliveries.deliveryId, deliveryId.slice(0, 200))))
     .catch((error) => deps.log.warn({ err: error, provider, deliveryId }, 'failed to release webhook delivery'))
 }
 
-async function identityUserId(deps: DualContext, provider: string, externalId: string): Promise<string | null> {
+async function identityUserId(deps: CoreContext, provider: string, externalId: string): Promise<string | null> {
   const [row] = await deps.db
     .select({ userId: identities.userId })
     .from(identities)
@@ -70,7 +70,7 @@ async function identityUserId(deps: DualContext, provider: string, externalId: s
 }
 
 async function insertMessage(
-  ctx: DualContext,
+  ctx: CoreContext,
   channel: ChannelRow,
   message: InboundMessage,
   userId: string | null,
@@ -115,7 +115,7 @@ async function insertMessage(
   }
 }
 
-async function tryBindUnboundChat(ctx: DualContext, message: InboundMessage): Promise<IngestResult | null> {
+async function tryBindUnboundChat(ctx: CoreContext, message: InboundMessage): Promise<IngestResult | null> {
   const command = parseCommand(message.text)
   if (command?.name !== 'bind' || !command.arg || !message.mentionBot) return null
   const userId = await identityUserId(ctx, message.provider, message.sender.externalId)
@@ -148,21 +148,6 @@ async function tryBindUnboundChat(ctx: DualContext, message: InboundMessage): Pr
   return { action: 'command', reason: 'bind' }
 }
 
-function mapResult(result: ReceiveResult): IngestResult {
-  switch (result.action) {
-    case 'duplicate':
-      return { action: 'duplicate', duplicate: true }
-    case 'evaluation':
-      return { action: 'trigger_evaluated', reason: result.reason, ...(result.evaluationId ? { evaluationId: result.evaluationId } : {}) } as IngestResult
-    case 'input':
-      return { action: 'ticket_appended', ...(result.ticketIds?.[0] ? { ticketId: result.ticketIds[0] } : {}), reason: result.reason }
-    case 'command':
-      return { action: 'command', reason: result.reason, ...(result.ticketId ? { ticketId: result.ticketId } : {}) }
-    case 'ignored':
-      return { action: 'ignored', reason: result.reason }
-  }
-}
-
 function mapCoreResult(result: CoreIntakeResult): IngestResult {
   switch (result.action) {
     case 'queued':
@@ -176,7 +161,7 @@ function mapCoreResult(result: CoreIntakeResult): IngestResult {
   }
 }
 
-export async function ingestInboundEvent(ctx: DualContext, event: InboundEvent): Promise<IngestResult[]> {
+export async function ingestInboundEvent(ctx: CoreContext, event: InboundEvent): Promise<IngestResult[]> {
   const results: IngestResult[] = []
   for (const message of event.messages) {
     if (!message.text.trim() && !message.mentionBot) {
@@ -215,65 +200,49 @@ export async function ingestInboundEvent(ctx: DualContext, event: InboundEvent):
     }
 
     const command = parseCommand(message.text)
-    if (ctx.config.CORE_ENABLED) {
-      const role = userId === null ? null : await getMembership(ctx, project.id, userId)
-      if (command !== null) {
-        const handled = await handleCoreCommand({
-          db: ctx.db,
-          projectId: project.id,
-          channelId: channel.id,
-          threadKey,
-          role,
-          command,
-          at: ctx.now(),
-          dedupeKey: `cmd:${message.providerMessageId}`,
-        })
-        results.push(
-          handled.action === 'command'
-            ? { action: 'command', reason: handled.reply ?? 'core_command' }
-            : { action: 'ignored', reason: handled.reason ?? 'core_command' },
-        )
+    const role = userId === null ? null : await getMembership(ctx, project.id, userId)
+    if (command !== null) {
+      if (project.status !== 'active' && command.name !== 'status' && command.name !== 'help') {
+        results.push({ action: 'ignored', reason: 'project_not_active' })
         continue
       }
-      const core = await receiveCoreTrigger(ctx.db, {
+      const handled = await handleCoreCommand({
+        db: ctx.db,
         projectId: project.id,
         channelId: channel.id,
-        provider: message.provider,
-        externalId: message.providerMessageId,
         threadKey,
-        actorUserId: userId,
-        actorExternalId: message.sender.externalId,
-        actorName: message.sender.name ?? null,
-        text: message.text,
-        address: message.mentionBot ? 'mention' : 'ambient',
-        isBot: message.sender.isBot ?? false,
-        mentionedBot: message.mentionBot,
-        replyTo: message.replyToMessageId ?? null,
-        raw: message.raw,
-        authorized: role !== null && project.status === 'active',
+        role,
+        command,
         at: ctx.now(),
+        dedupeKey: `cmd:${message.providerMessageId}`,
       })
-      results.push(mapCoreResult(core))
+      results.push(
+        handled.action === 'command'
+          ? { action: 'command', reason: handled.reply ?? 'core_command' }
+          : { action: 'ignored', reason: handled.reason ?? 'core_command' },
+      )
       continue
     }
-    const result = await receiveTrigger(ctx, {
+
+    const core = await receiveCoreTrigger(ctx.db, {
+      projectId: project.id,
+      channelId: channel.id,
       provider: message.provider,
       externalId: message.providerMessageId,
-      chatId: message.externalChatId,
       threadKey,
-      senderExternalId: message.sender.externalId,
-      senderName: message.sender.name ?? null,
-      isBot: message.sender.isBot ?? false,
+      actorUserId: userId,
+      actorExternalId: message.sender.externalId,
+      actorName: message.sender.name ?? null,
       text: message.text,
-      mentionBot: message.mentionBot,
+      address: message.mentionBot ? 'mention' : 'ambient',
+      isBot: message.sender.isBot ?? false,
+      mentionedBot: message.mentionBot,
       replyTo: message.replyToMessageId ?? null,
-      messageId: stored.row.id,
-      command,
       raw: message.raw,
+      authorized: role !== null && project.status === 'active',
+      at: ctx.now(),
     })
-    results.push(mapResult(result))
+    results.push(mapCoreResult(core))
   }
   return results
 }
-
-

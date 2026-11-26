@@ -8,6 +8,7 @@ export interface BoardProject {
 }
 
 export interface BoardTicket {
+  id?: string
   shortName: string
   title: string
   stage: TicketStage
@@ -64,8 +65,9 @@ export function renderBoard(input: BoardInput, options: RenderBoardOptions = {})
     lines.push('(no open tickets)')
   } else {
     for (const ticket of input.tickets) {
+      const idPart = ticket.id === undefined ? '' : ` (id=${ticket.id})`
       const report = ticket.lastReport === undefined ? '' : ` — last report: ${clip(ticket.lastReport, max)}`
-      lines.push(`- ${ticket.shortName} [${ticket.stage}] ${clip(ticket.title, max)}${report}`)
+      lines.push(`- ${ticket.shortName}${idPart} [${ticket.stage}] ${clip(ticket.title, max)}${report}`)
     }
   }
   lines.push('')

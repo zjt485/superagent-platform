@@ -1,5 +1,3 @@
-import { hostname } from 'node:os'
-import { randomUUID } from 'node:crypto'
 import { githubMode, loadConfig } from './config.js'
 import { loadLocalEnv } from './env.js'
 import { createLogger } from './logger.js'
@@ -13,16 +11,15 @@ import type { AppContext } from './app/context.js'
 import { depsOf } from './services/deps.js'
 import { flushOutbox } from './services/outbox.js'
 import { cleanupExpiredSessions } from './services/auth.js'
-import { reapStaleTurns } from './dual/engine.js'
-import { startInlineWorker } from './dual/inline.js'
-import type { DualWorkerContext } from './dual/worker.js'
-import { createTurnRuntime } from './dual/runtime.js'
+import { createTurnRuntime } from './core/agent/runtime.js'
 import { RealGitOps } from './worker/git.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { startCoreLoop } from './core/worker/loop.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
 import { routerModelFromConfig } from './core/router/from-config.js'
 import { GitDeliveryProvider } from './core/worker/delivery.js'
+import { createDbWorkspaceProvider } from './core/worker/workspace-provider.js'
+import { reapStaleCoreTurns } from './core/worker/reaper.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -67,11 +64,17 @@ if (wecomBot) {
 
 const app = await buildApp(ctx)
 
-const coreLoop = config.CORE_ENABLED
+const coreLoop = config.INLINE_WORKER
   ? startCoreLoop({
       db: handle.db,
       model: routerModelFromConfig(config),
       executor: new RuntimeExecutor(createTurnRuntime(config, log)),
+      workspace: createDbWorkspaceProvider({
+        db: handle.db,
+        rootDir: config.WORKSPACES_DIR,
+        github,
+        webBase: config.GITHUB_WEB_BASE,
+      }),
       delivery: new GitDeliveryProvider({
         db: handle.db,
         git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
@@ -81,23 +84,9 @@ const coreLoop = config.CORE_ENABLED
       }),
       now: deps.now,
       intervalMs: config.CORE_POLL_INTERVAL_MS,
+      leaseSeconds: config.RUN_LEASE_SECONDS,
       log,
     })
-  : null
-
-const inlineWorker = config.INLINE_WORKER && !config.CORE_ENABLED
-  ? startInlineWorker(
-      {
-        ...deps,
-        queue,
-        ports: {
-          github,
-          git: githubMode(config) === 'mock' ? new FakeGitOps() : new RealGitOps(),
-          runtime: createTurnRuntime(config, log),
-        },
-      } satisfies DualWorkerContext,
-      `inline-${hostname()}-${randomUUID().slice(0, 8)}`,
-    )
   : null
 
 const timers: NodeJS.Timeout[] = []
@@ -106,14 +95,18 @@ timers.push(
     void flushOutbox(ctx, ctx.senders, config.OUTBOX_BATCH_SIZE).catch((error) => log.warn({ err: error }, 'outbox flush failed'))
   }, config.OUTBOX_INTERVAL_MS),
 )
-if (!config.CORE_ENABLED) {
-  timers.push(setInterval(() => {
-    void reapStaleTurns({ ...ctx, queue }).catch((error) => log.warn({ err: error }, 'turn reaper failed'))
-  }, 30_000))
-}
-timers.push(setInterval(() => {
-  void cleanupExpiredSessions(ctx).catch((error) => log.warn({ err: error }, 'session cleanup failed'))
-}, 3_600_000))
+timers.push(
+  setInterval(() => {
+    void reapStaleCoreTurns({ db: handle.db, now: deps.now, leaseSeconds: config.RUN_LEASE_SECONDS }).catch((error) =>
+      log.warn({ err: error }, 'core turn reaper failed'),
+    )
+  }, 30_000),
+)
+timers.push(
+  setInterval(() => {
+    void cleanupExpiredSessions(ctx).catch((error) => log.warn({ err: error }, 'session cleanup failed'))
+  }, 3_600_000),
+)
 
 await app.listen({ host: config.HOST, port: config.PORT })
 log.info({ port: config.PORT, queue: config.QUEUE_DRIVER, github: github.mode, database: handle.kind }, 'api listening')
@@ -122,7 +115,6 @@ async function shutdown(signal: string): Promise<void> {
   log.info({ signal }, 'api shutting down')
   for (const timer of timers) clearInterval(timer)
   await coreLoop?.stop().catch(() => {})
-  await inlineWorker?.stop().catch(() => {})
   await wecomBot?.stop().catch(() => {})
   await app.close().catch(() => {})
   if (redis) await redis.close().catch(() => {})

@@ -1,4 +1,4 @@
-import type { TurnRuntime, TurnRuntimeInput } from '../../dual/types.js'
+import type { TurnRuntime, TurnRuntimeInput } from '../agent/types.js'
 import type { Report, ReportStatus } from '../domain/types.js'
 import type { Executor, TurnContext } from './executor.js'
 
@@ -57,23 +57,33 @@ export class RuntimeExecutor implements Executor {
 
   async run(context: TurnContext): Promise<Report> {
     const controller = new AbortController()
-    const input: TurnRuntimeInput = {
-      role: 'executor',
-      projectId: context.projectId,
-      sessionId: context.sessionId,
-      turnId: context.turnId,
-      ticketId: context.ticketId,
-      workspace: context.worktreePath,
-      prompt: context.prompt,
-      packet: context.packet,
-      timeoutMs: context.timeoutMs,
-      signal: controller.signal,
-      env: context.env ?? {},
-      onEvent: async (event) => {
-        await this.onEvent?.(event)
-      },
+    const onAbort = () => controller.abort()
+    if (context.signal !== undefined) {
+      if (context.signal.aborted) controller.abort()
+      else context.signal.addEventListener('abort', onAbort, { once: true })
     }
-    const result = await this.runtime.run(input)
-    return reportFromRuntime(result.output, result.tokens, result.cost)
+    try {
+      const input: TurnRuntimeInput = {
+        role: 'executor',
+        projectId: context.projectId,
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        ticketId: context.ticketId,
+        workspace: context.worktreePath,
+        prompt: context.prompt,
+        packet: context.packet,
+        timeoutMs: context.timeoutMs,
+        signal: controller.signal,
+        env: context.env ?? {},
+        onEvent: async (event) => {
+          await context.onEvent?.(event)
+          await this.onEvent?.(event)
+        },
+      }
+      const result = await this.runtime.run(input)
+      return reportFromRuntime(result.output, result.tokens, result.cost)
+    } finally {
+      context.signal?.removeEventListener('abort', onAbort)
+    }
   }
 }

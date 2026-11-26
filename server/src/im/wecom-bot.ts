@@ -1,5 +1,5 @@
 import AiBot, { generateReqId, type MixedMessage, type TextMessage, type VoiceMessage, type WsFrame } from '@wecom/aibot-node-sdk'
-import type { DualContext } from '../dual/engine.js'
+import type { CoreContext } from '../core/operations.js'
 import type { InboundEvent } from '../domain/message.js'
 import { ingestInboundEvent } from '../services/intake.js'
 import { hasWecomBot } from '../config.js'
@@ -63,7 +63,7 @@ export function botEventFromFrame(frame: WsFrame, botName: string): InboundEvent
  * this is the official receive path for group @ mentions. The bot must be
  * added to the group once by its owner (WeCom has no API to do that).
  */
-export function startWecomBot(ctx: DualContext): WecomBotHandle | null {
+export function startWecomBot(ctx: CoreContext): WecomBotHandle | null {
   if (!hasWecomBot(ctx.config)) return null
 
   const client = new AiBot.WSClient({
