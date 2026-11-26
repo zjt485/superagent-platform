@@ -85,6 +85,7 @@ const coreLoop = config.INLINE_WORKER
       now: deps.now,
       intervalMs: config.CORE_POLL_INTERVAL_MS,
       leaseSeconds: config.RUN_LEASE_SECONDS,
+      events: deps.events,
       log,
     })
   : null

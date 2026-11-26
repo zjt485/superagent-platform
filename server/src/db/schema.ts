@@ -56,7 +56,54 @@ export const assignmentStatusEnum = pgEnum('assignment_status', ['pending', 'run
 export const reportStatusEnum = pgEnum('report_status', ['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped'])
 export const subscriptionKindEnum = pgEnum('subscription_kind', ['own', 'context'])
 export const inputSourceEnum = pgEnum('input_source', ['trigger', 'person', 'note', 'policy', 'approval', 'system'])
-export const triggerKindEnum = pgEnum('trigger_kind', ['message', 'command', 'ci', 'pr_comment', 'pr_merge', 'pr_close', 'resume'])
+export const triggerKindEnum = pgEnum('trigger_kind', ['message', 'command', 'ci', 'pr_comment', 'pr_merge', 'pr_close', 'resume', 'handoff', 'routine'])
+export const botStatusEnum = pgEnum('bot_status', ['active', 'paused', 'archived'])
+export const botSandboxStateEnum = pgEnum('bot_sandbox_state', ['stopped', 'starting', 'running', 'error'])
+export const roomKindEnum = pgEnum('room_kind', ['group', 'dm', 'routine_feed'])
+export const roomStatusEnum = pgEnum('room_status', ['active', 'archived'])
+export const roomAuthorKindEnum = pgEnum('room_author_kind', ['user', 'bot', 'system'])
+export const roomMessageKindEnum = pgEnum('room_message_kind', ['chat', 'handoff', 'status', 'approval_card', 'artifact', 'report'])
+
+export interface BotModelConfig {
+  baseUrl?: string
+  apiKeyRef?: string
+  model?: string
+  temperature?: number
+  maxOutputTokens?: number
+  maxSteps?: number
+}
+
+export type ToolRiskDecision = 'allow' | 'confirm' | 'deny'
+
+export interface BotToolPolicy {
+  allowedTools?: string[]
+  mcpServerIds?: string[]
+  rules?: Record<string, ToolRiskDecision>
+}
+
+export interface BotSandboxConfig {
+  mode?: 'local' | 'docker'
+  image?: string
+  memoryMb?: number
+  cpus?: number
+  browserEnabled?: boolean
+  networkMode?: 'none' | 'bridge'
+}
+
+export interface BotImBinding {
+  provider?: 'feishu' | 'wecom'
+  botId?: string
+  appId?: string
+  secretRef?: string
+}
+
+export interface RoomAttachment {
+  type: 'screenshot' | 'file' | 'pr' | 'diff' | 'link' | 'approval'
+  title: string
+  url?: string
+  mimeType?: string
+  metadata?: Record<string, unknown>
+}
 export const triggerDispositionEnum = pgEnum('trigger_disposition', [
   'pending',
   'attached',
@@ -270,6 +317,13 @@ export const tickets = pgTable(
     lastReportId: uuid('last_report_id'),
     endedReason: text('ended_reason'),
     endedAt: timestamp('ended_at', { withTimezone: true, mode: 'date' }),
+
+    // Multi-bot rooms & handoffs.
+    botId: uuid('bot_id'),
+    roomId: uuid('room_id'),
+    handoffChainId: uuid('handoff_chain_id'),
+    handoffHop: integer('handoff_hop').notNull().default(0),
+    parentTicketId: uuid('parent_ticket_id'),
 
     createdAt,
     updatedAt,
@@ -490,6 +544,11 @@ export const triggers = pgTable(
     evaluationId: uuid('evaluation_id'),
     disposition: triggerDispositionEnum('disposition').notNull().default('pending'),
     address: triggerAddressEnum('address').notNull().default('mention'),
+    roomId: uuid('room_id'),
+    targetBotId: uuid('target_bot_id'),
+    sourceBotId: uuid('source_bot_id'),
+    handoffChainId: uuid('handoff_chain_id'),
+    handoffHop: integer('handoff_hop').notNull().default(0),
     createdAt,
   },
   (table) => [
@@ -595,6 +654,7 @@ export const sessionTurns = pgTable(
       .notNull()
       .references(() => agentSessions.id, { onDelete: 'cascade' }),
     ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'cascade' }),
+    botId: uuid('bot_id'),
     evaluationId: uuid('evaluation_id').references(() => evaluations.id, { onDelete: 'set null' }),
     assignmentId: uuid('assignment_id'),
     kind: turnKindEnum('kind').notNull(),
@@ -766,6 +826,106 @@ export const turnEvents = pgTable(
   (table) => [index('turn_events_turn_idx').on(table.turnId, table.id)],
 )
 
+export const bots = pgTable(
+  'bots',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    slug: text('slug').notNull(),
+    name: text('name').notNull(),
+    roleTitle: text('role_title').notNull(),
+    avatar: text('avatar'),
+    status: botStatusEnum('status').notNull().default('active'),
+    systemPrompt: text('system_prompt').notNull().default(''),
+    modelConfig: jsonb('model_config').$type<BotModelConfig>().notNull().default({}),
+    toolPolicy: jsonb('tool_policy').$type<BotToolPolicy>().notNull().default({}),
+    sandboxConfig: jsonb('sandbox_config').$type<BotSandboxConfig>().notNull().default({}),
+    imBinding: jsonb('im_binding').$type<BotImBinding | null>(),
+    sandboxState: botSandboxStateEnum('sandbox_state').notNull().default('stopped'),
+    containerId: text('container_id'),
+    lastActiveAt: timestamp('last_active_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    uniqueIndex('bots_project_slug_uq').on(table.projectId, table.slug),
+    index('bots_project_status_idx').on(table.projectId, table.status),
+  ],
+)
+
+export const rooms = pgTable(
+  'rooms',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    kind: roomKindEnum('kind').notNull().default('group'),
+    name: text('name').notNull(),
+    topic: text('topic'),
+    channelId: uuid('channel_id').references(() => channels.id, { onDelete: 'set null' }),
+    dmUserId: uuid('dm_user_id').references(() => users.id, { onDelete: 'cascade' }),
+    defaultBotId: uuid('default_bot_id').references(() => bots.id, { onDelete: 'set null' }),
+    maxHandoffHops: integer('max_handoff_hops').notNull().default(5),
+    status: roomStatusEnum('status').notNull().default('active'),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    index('rooms_project_idx').on(table.projectId, table.kind),
+    index('rooms_channel_idx').on(table.channelId),
+  ],
+)
+
+export const roomBots = pgTable(
+  'room_bots',
+  {
+    id: uuid('id').primaryKey(),
+    roomId: uuid('room_id')
+      .notNull()
+      .references(() => rooms.id, { onDelete: 'cascade' }),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id, { onDelete: 'cascade' }),
+    joinedAt: timestamp('joined_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('room_bots_uq').on(table.roomId, table.botId)],
+)
+
+export const roomMessages = pgTable(
+  'room_messages',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    roomId: uuid('room_id')
+      .notNull()
+      .references(() => rooms.id, { onDelete: 'cascade' }),
+    threadKey: text('thread_key').notNull(),
+    authorKind: roomAuthorKindEnum('author_kind').notNull(),
+    authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
+    authorBotId: uuid('author_bot_id').references(() => bots.id, { onDelete: 'set null' }),
+    kind: roomMessageKindEnum('kind').notNull().default('chat'),
+    content: text('content').notNull(),
+    attachments: jsonb('attachments').$type<RoomAttachment[]>().notNull().default([]),
+    ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
+    turnId: uuid('turn_id').references(() => sessionTurns.id, { onDelete: 'set null' }),
+    replyToId: uuid('reply_to_id'),
+    externalProvider: text('external_provider'),
+    externalMessageId: text('external_message_id'),
+    createdAt,
+  },
+  (table) => [
+    index('room_messages_room_time_idx').on(table.roomId, table.createdAt),
+    uniqueIndex('room_messages_external_uq')
+      .on(table.externalProvider, table.externalMessageId)
+      .where(sql`external_provider is not null and external_message_id is not null`),
+  ],
+)
+
 export const schema = {
   users,
   identities,
@@ -797,6 +957,10 @@ export const schema = {
   assignments,
   reports,
   turnEvents,
+  bots,
+  rooms,
+  roomBots,
+  roomMessages,
 }
 
 export type Schema = typeof schema
@@ -815,3 +979,6 @@ export type ThreadRow = typeof threads.$inferSelect
 export type TurnRow = typeof sessionTurns.$inferSelect
 export type DecisionRow = typeof decisions.$inferSelect
 export type TicketInputRow = typeof ticketInputs.$inferSelect
+export type BotRow = typeof bots.$inferSelect
+export type RoomRow = typeof rooms.$inferSelect
+export type RoomMessageRow = typeof roomMessages.$inferSelect

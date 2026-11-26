@@ -18,6 +18,7 @@ import { DEFAULT_MODEL_CONFIG, DEFAULT_POLICY, modelConfigSchema, parsePolicy, p
 import { ACTIVE_TICKET_STATUSES, PROJECT_STATUS_TRANSITIONS, type MemberRole, type ProjectStatus } from '../domain/status.js'
 import { audit } from './audit.js'
 import { assertOwner, requireProjectAccess, type ProjectAccess } from './access.js'
+import { ensureDefaultGroupRoom } from './rooms.js'
 import { isUniqueViolation } from '../db/errors.js'
 
 export interface CreateProjectInput {
@@ -92,6 +93,7 @@ export async function createProject(deps: Deps, creator: { id: string; name: str
     target: `project:${projectId}`,
     metadata: { name, slug },
   })
+  await ensureDefaultGroupRoom(deps.db, projectId, now)
   const [row] = await deps.db.select().from(projects).where(eq(projects.id, projectId))
   if (!row) throw notFound('项目创建失败')
   return row

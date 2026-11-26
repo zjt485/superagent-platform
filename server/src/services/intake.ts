@@ -21,6 +21,7 @@ import { isUniqueViolation } from '../db/errors.js'
 import type { CoreContext } from '../core/operations.js'
 import { receiveCoreTrigger, type CoreIntakeResult } from '../core/intake.js'
 import { handleCoreCommand } from '../core/commands.js'
+import { appendRoomMessage, ensureChannelRoom, resolveMentionedBot } from './rooms.js'
 
 export interface IngestResult {
   action: string
@@ -199,6 +200,23 @@ export async function ingestInboundEvent(ctx: CoreContext, event: InboundEvent):
       continue
     }
 
+    const at = ctx.now()
+    const room = await ensureChannelRoom(ctx.db, project.id, channel, at)
+    await appendRoomMessage(ctx.db, {
+      projectId: project.id,
+      roomId: room.id,
+      threadKey,
+      authorKind: message.sender.isBot ? 'bot' : 'user',
+      authorUserId: userId,
+      kind: 'chat',
+      content: message.text,
+      externalProvider: message.provider,
+      externalMessageId: message.providerMessageId,
+      syncToIm: false,
+      at,
+      events: ctx.events,
+    }).catch(() => {})
+
     const command = parseCommand(message.text)
     const role = userId === null ? null : await getMembership(ctx, project.id, userId)
     if (command !== null) {
@@ -213,7 +231,7 @@ export async function ingestInboundEvent(ctx: CoreContext, event: InboundEvent):
         threadKey,
         role,
         command,
-        at: ctx.now(),
+        at,
         dedupeKey: `cmd:${message.providerMessageId}`,
       })
       results.push(
@@ -224,9 +242,12 @@ export async function ingestInboundEvent(ctx: CoreContext, event: InboundEvent):
       continue
     }
 
+    const mentionedBot = await resolveMentionedBot(ctx.db, project.id, message.text)
     const core = await receiveCoreTrigger(ctx.db, {
       projectId: project.id,
       channelId: channel.id,
+      roomId: room.id,
+      targetBotId: mentionedBot?.id ?? null,
       provider: message.provider,
       externalId: message.providerMessageId,
       threadKey,
@@ -234,13 +255,13 @@ export async function ingestInboundEvent(ctx: CoreContext, event: InboundEvent):
       actorExternalId: message.sender.externalId,
       actorName: message.sender.name ?? null,
       text: message.text,
-      address: message.mentionBot ? 'mention' : 'ambient',
+      address: message.mentionBot || mentionedBot !== null ? 'mention' : 'ambient',
       isBot: message.sender.isBot ?? false,
-      mentionedBot: message.mentionBot,
+      mentionedBot: message.mentionBot || mentionedBot !== null,
       replyTo: message.replyToMessageId ?? null,
       raw: message.raw,
       authorized: role !== null && project.status === 'active',
-      at: ctx.now(),
+      at,
     })
     results.push(mapCoreResult(core))
   }

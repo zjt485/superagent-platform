@@ -1,11 +1,12 @@
 import { stripMentions } from '../../domain/message.js'
 import type { RouterOutput } from '../domain/types.js'
-import type { BoardProject, BoardTicket, BoardTrigger } from './board.js'
+import type { BoardBot, BoardProject, BoardTicket, BoardTrigger } from './board.js'
 
 export interface RouterDecisionContext {
   /** Rendered state board; the LLM model reads this, the rule model may ignore it. */
   board: string
   project: BoardProject
+  bots?: BoardBot[]
   tickets: Array<BoardTicket & { id?: string }>
   batch: BoardTrigger[]
 }
@@ -15,12 +16,39 @@ export interface RouterModel {
   decide(context: RouterDecisionContext): Promise<RouterOutput>
 }
 
-const TASK_PATTERN = /改|修|加|做|实现|新增|删除|重构|优化|部署|修复|支持|fix|add|update|refactor|bug|feature/i
+const TASK_PATTERN = /改|修|加|做|实现|新增|删除|重构|优化|部署|修复|支持|调研|分析|写|测试|巡检|回归|评估|方案|PRD|fix|add|update|refactor|bug|feature|research|test|check|audit/i
 const SHORT_NAME_PATTERN = /\bt-[a-z0-9]{6}\b/i
 
 function titleOf(text: string): string {
   const normalized = stripMentions(text).replace(/\s+/g, ' ').trim()
   return normalized.length > 80 ? `${normalized.slice(0, 80)}…` : normalized
+}
+
+function pickBotSlug(trigger: BoardTrigger, text: string, bots: BoardBot[] | undefined): string | undefined {
+  if (!bots || bots.length === 0) return undefined
+  if (trigger.targetBotId) {
+    const exact = bots.find((bot) => bot.id === trigger.targetBotId)
+    if (exact) return exact.slug
+  }
+  const mentionMatches = [...trigger.text.matchAll(/[@＠]([a-z0-9][a-z0-9_-]{0,39})\b/gi)]
+  for (const match of mentionMatches) {
+    const slug = match[1]?.toLowerCase()
+    const matched = bots.find((bot) => bot.slug.toLowerCase() === slug)
+    if (matched) return matched.slug
+  }
+  if (/调研|竞品|资料|研究|research|benchmark/i.test(text)) {
+    const found = bots.find((bot) => bot.slug === 'researcher')
+    if (found) return found.slug
+  }
+  if (/PRD|产品|需求拆解|验收标准|原型|spec/i.test(text)) {
+    const found = bots.find((bot) => bot.slug === 'pm')
+    if (found) return found.slug
+  }
+  if (/QA|巡检|回归|测试|复现|页面报错|verify|test/i.test(text)) {
+    const found = bots.find((bot) => bot.slug === 'qa')
+    if (found) return found.slug
+  }
+  return bots.find((bot) => bot.slug === 'engineer')?.slug ?? bots[0]?.slug
 }
 
 /** Deterministic router used by tests, the demo, and as a fallback when no model is configured. */
@@ -35,6 +63,20 @@ export class RuleBasedRouterModel implements RouterModel {
           triggerId: trigger.id,
           action: 'command' as const,
           reason: 'rule: command',
+        }
+      }
+
+      if (trigger.kind === 'handoff' || trigger.kind === 'routine') {
+        const botSlug = pickBotSlug(trigger, text, context.bots)
+        return {
+          triggerId: trigger.id,
+          action: 'new' as const,
+          ...(botSlug ? { botSlug } : {}),
+          title: titleOf(text),
+          body: text,
+          scope: text,
+          planApproval: context.project.planApproval,
+          reason: `rule: ${trigger.kind}`,
         }
       }
 
@@ -66,15 +108,17 @@ export class RuleBasedRouterModel implements RouterModel {
         }
       }
 
-      if (TASK_PATTERN.test(text)) {
+      if (TASK_PATTERN.test(text) || trigger.address === 'direct' || trigger.targetBotId) {
+        const botSlug = pickBotSlug(trigger, text, context.bots)
         return {
           triggerId: trigger.id,
           action: 'new' as const,
+          ...(botSlug ? { botSlug } : {}),
           title: titleOf(text),
           body: text,
           scope: text,
           planApproval: context.project.planApproval,
-          reason: 'rule: task keyword',
+          reason: trigger.targetBotId ? 'rule: targeted bot request' : 'rule: task keyword',
         }
       }
 

@@ -8,8 +8,10 @@ export interface NewTrigger {
   id: string
   projectId: string
   channelId: string | null
+  roomId?: string | null
   provider: string
   externalId: string
+  kind?: 'message' | 'command' | 'ci' | 'pr_comment' | 'pr_merge' | 'pr_close' | 'resume' | 'handoff' | 'routine'
   messageId?: string | null
   threadKey: string
   actorUserId?: string | null
@@ -22,6 +24,10 @@ export interface NewTrigger {
   raw?: unknown
   address: TriggerAddress
   disposition?: TriggerDisposition
+  targetBotId?: string | null
+  sourceBotId?: string | null
+  handoffChainId?: string | null
+  handoffHop?: number
   createdAt?: Date
 }
 
@@ -33,8 +39,10 @@ export async function insertTrigger(db: Database, input: NewTrigger): Promise<bo
       id: input.id,
       projectId: input.projectId,
       channelId: input.channelId,
+      roomId: input.roomId ?? null,
       provider: input.provider,
       externalId: input.externalId,
+      kind: input.kind ?? 'message',
       messageId: input.messageId ?? null,
       threadKey: input.threadKey,
       actorUserId: input.actorUserId ?? null,
@@ -47,6 +55,10 @@ export async function insertTrigger(db: Database, input: NewTrigger): Promise<bo
       raw: input.raw ?? null,
       address: input.address,
       disposition: input.disposition ?? 'pending',
+      targetBotId: input.targetBotId ?? null,
+      sourceBotId: input.sourceBotId ?? null,
+      handoffChainId: input.handoffChainId ?? null,
+      handoffHop: input.handoffHop ?? 0,
       createdAt: input.createdAt ?? new Date(),
     })
     .onConflictDoNothing({ target: [triggers.provider, triggers.externalId] })

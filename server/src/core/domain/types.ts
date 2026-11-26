@@ -76,6 +76,8 @@ export interface DecisionItem {
   triggerId: string
   action: DecisionAction
   ticketId?: string
+  botSlug?: string
+  botId?: string
   title?: string
   body?: string
   scope?: string
@@ -99,6 +101,13 @@ export interface RouterOutput {
   usage?: RouterUsage
 }
 
+export interface HandoffRequest {
+  toBotSlug: string
+  summary: string
+  context: string
+  expectedOutput?: string
+}
+
 export interface Report {
   status: ReportStatus
   summary: string
@@ -107,6 +116,7 @@ export interface Report {
   branch?: string
   prUrl?: string
   changedFiles?: string[]
+  handoff?: HandoffRequest
   tokens?: number
   cost?: number
   raw?: unknown

@@ -7,11 +7,19 @@ export interface BoardProject {
   allowThreadReplies: boolean
 }
 
+export interface BoardBot {
+  id: string
+  slug: string
+  name: string
+  roleTitle: string
+}
+
 export interface BoardTicket {
   id?: string
   shortName: string
   title: string
   stage: TicketStage
+  botSlug?: string
   lastReport?: string
 }
 
@@ -21,11 +29,14 @@ export interface BoardTrigger {
   text: string
   at: string
   address: TriggerAddress
+  kind?: string
+  targetBotId?: string | null
 }
 
 export interface BoardInput {
   project: BoardProject
   thread: { key: string; summary: string | null }
+  bots?: BoardBot[]
   tickets: BoardTicket[]
   recent: BoardTrigger[]
   batch: BoardTrigger[]
@@ -60,14 +71,23 @@ export function renderBoard(input: BoardInput, options: RenderBoardOptions = {})
   lines.push(input.thread.summary === null || input.thread.summary.trim() === '' ? '(no summary)' : clip(input.thread.summary, max * 4))
   lines.push('')
 
+  if (input.bots !== undefined && input.bots.length > 0) {
+    lines.push('## Available bots')
+    for (const bot of input.bots) {
+      lines.push(`- @${bot.slug} (${bot.name} · ${bot.roleTitle})`)
+    }
+    lines.push('')
+  }
+
   lines.push('## Open tickets')
   if (input.tickets.length === 0) {
     lines.push('(no open tickets)')
   } else {
     for (const ticket of input.tickets) {
       const idPart = ticket.id === undefined ? '' : ` (id=${ticket.id})`
+      const botPart = ticket.botSlug === undefined ? '' : ` [@${ticket.botSlug}]`
       const report = ticket.lastReport === undefined ? '' : ` — last report: ${clip(ticket.lastReport, max)}`
-      lines.push(`- ${ticket.shortName}${idPart} [${ticket.stage}] ${clip(ticket.title, max)}${report}`)
+      lines.push(`- ${ticket.shortName}${idPart}${botPart} [${ticket.stage}] ${clip(ticket.title, max)}${report}`)
     }
   }
   lines.push('')

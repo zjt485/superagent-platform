@@ -7,6 +7,7 @@ import type { OAuthRegistry } from '../domain/oauth.js'
 import type { GitHubPort } from '../domain/github.js'
 import type { OutboxSender } from '../services/outbox.js'
 import type { ChannelProvider } from '../domain/status.js'
+import type { ProjectEventBus } from '../services/events.js'
 
 /** Everything an HTTP handler may reach; built once in the API entrypoint. */
 export interface AppContext {
@@ -14,6 +15,7 @@ export interface AppContext {
   db: Database
   log: Logger
   now: () => Date
+  events?: ProjectEventBus
   queue: QueuePort
   im: ImRegistry
   oauth: OAuthRegistry

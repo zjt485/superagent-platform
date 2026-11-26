@@ -29,9 +29,9 @@ const SYSTEM_PROMPT = [
   '读取用户给出的状态板，为「This batch」里的每一条 Trigger 恰好返回一个 decision。',
   '只输出一个 JSON 对象，不要 Markdown 代码块，不要解释。',
   '格式：',
-  '{"summary":"一句话总结","items":[{"triggerId":"...","action":"new|attach|ignore|stop|command","ticketId":"...","title":"...","body":"...","scope":"...","planApproval":"required|auto","priority":"low|normal|high|urgent","reason":"...","confidence":0.0}]}',
+  '{"summary":"一句话总结","items":[{"triggerId":"...","action":"new|attach|ignore|stop|command","ticketId":"...","botSlug":"...","title":"...","body":"...","scope":"...","planApproval":"required|auto","priority":"low|normal|high|urgent","reason":"...","confidence":0.0}]}',
   '规则：',
-  '- new 必须给 title；attach / stop 必须给 ticketId（状态板中工单的 id 或 shortName）；ignore/command 不需要 ticketId。',
+  '- new 必须给 title；如果状态板有 Available bots，请按职责选择最匹配的 botSlug；attach / stop 必须给 ticketId（状态板中工单的 id 或 shortName）；ignore/command 不需要 ticketId。',
   '- 每条 Trigger 只能出现一次，不要发明状态板里没有的 triggerId。',
   '- 只有明确的任务才 new；闲聊 ignore；指向已有工单的追问 attach；要求停止 stop。',
 ].join('\n')

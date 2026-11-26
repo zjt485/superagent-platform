@@ -21,6 +21,11 @@ export interface NewTicket {
   baseRef?: string | null
   policyVersion?: string | null
   originTriggerId?: string | null
+  botId?: string | null
+  roomId?: string | null
+  handoffChainId?: string | null
+  handoffHop?: number
+  parentTicketId?: string | null
   at: Date
 }
 
@@ -44,6 +49,11 @@ export async function insertTicket(db: Database, input: NewTicket): Promise<Tick
       baseRef: input.baseRef ?? null,
       policyVersion: input.policyVersion ?? null,
       originTriggerId: input.originTriggerId ?? null,
+      botId: input.botId ?? null,
+      roomId: input.roomId ?? null,
+      handoffChainId: input.handoffChainId ?? null,
+      handoffHop: input.handoffHop ?? 0,
+      parentTicketId: input.parentTicketId ?? null,
       createdAt: input.at,
       updatedAt: input.at,
     })

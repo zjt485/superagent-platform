@@ -29,6 +29,17 @@ export function reportFromRuntime(output: unknown, tokens: number, cost: number)
   const changedFiles = Array.isArray(record.changedFiles)
     ? record.changedFiles.filter((item): item is string => typeof item === 'string')
     : undefined
+  const rawHandoff = isRecord(record.handoff) ? record.handoff : null
+  const toBotSlug = rawHandoff ? stringOrUndefined(rawHandoff.toBotSlug) : undefined
+  const handoff =
+    rawHandoff && toBotSlug
+      ? {
+          toBotSlug,
+          summary: stringOrUndefined(rawHandoff.summary) ?? summary,
+          context: stringOrUndefined(rawHandoff.context) ?? summary,
+          ...(stringOrUndefined(rawHandoff.expectedOutput) ? { expectedOutput: stringOrUndefined(rawHandoff.expectedOutput) } : {}),
+        }
+      : undefined
 
   return {
     status,
@@ -40,6 +51,7 @@ export function reportFromRuntime(output: unknown, tokens: number, cost: number)
     ...(stringOrUndefined(record.branch) === undefined ? {} : { branch: stringOrUndefined(record.branch) }),
     ...(stringOrUndefined(record.prUrl) === undefined ? {} : { prUrl: stringOrUndefined(record.prUrl) }),
     ...(changedFiles === undefined ? {} : { changedFiles }),
+    ...(handoff === undefined ? {} : { handoff }),
     tokens,
     cost,
     raw: output,

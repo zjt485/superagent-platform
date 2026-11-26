@@ -9,6 +9,8 @@ export interface NewTurn {
   projectId: string
   sessionId: string
   ticketId: string
+  botId?: string | null
+  kind?: 'eval' | 'execute' | 'resume'
   seq: number
   inputIds: string[]
   model?: string | null
@@ -31,7 +33,8 @@ export async function insertTurn(db: Database, input: NewTurn): Promise<TurnRow>
       projectId: input.projectId,
       sessionId: input.sessionId,
       ticketId: input.ticketId,
-      kind: 'execute',
+      botId: input.botId ?? null,
+      kind: input.kind ?? 'execute',
       status: 'queued',
       seq: input.seq,
       input: { inputIds: input.inputIds },

@@ -5,6 +5,8 @@ import { Badge, Button, ConfirmButton, ErrorNotice, ErrorState, PageHeader, Spin
 import { labelOf } from '../format'
 import { canMaintain, isOwner, type ProjectTabProps } from './project/types'
 import { OverviewTab } from './project/OverviewTab'
+import { RoomsTab } from './project/RoomsTab'
+import { RosterTab } from './project/RosterTab'
 import { MainSessionTab } from './project/MainSessionTab'
 import { TicketsTab } from './project/TicketsTab'
 import { MembersTab } from './project/MembersTab'
@@ -15,13 +17,15 @@ import { SettingsTab } from './project/SettingsTab'
 import { AuditTab } from './project/AuditTab'
 import { UsageTab } from './project/UsageTab'
 
-const TAB_KEYS = ['overview', 'session', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
+const TAB_KEYS = ['rooms', 'roster', 'overview', 'tickets', 'session', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
+  rooms: '协作房间',
+  roster: 'Bot 团队',
   overview: '概览',
-  session: 'Main Session',
   tickets: '工单',
+  session: 'Router',
   members: '成员',
   channel: 'IM 群',
   repo: '仓库',
@@ -54,7 +58,7 @@ export function ProjectPage() {
   const role = project.role
   const owner = isOwner(role)
   const tabParam = searchParams.get('tab')
-  const tab: TabKey = TAB_KEYS.includes(tabParam as TabKey) ? (tabParam as TabKey) : 'overview'
+  const tab: TabKey = TAB_KEYS.includes(tabParam as TabKey) ? (tabParam as TabKey) : 'rooms'
   const setTab = (next: string) => {
     const params = new URLSearchParams(searchParams)
     params.set('tab', next)
@@ -77,7 +81,7 @@ export function ProjectPage() {
   }
 
   const tabProps: ProjectTabProps = { project, role, refresh: state.reload, onNavigate: setTab }
-  const visibleTabs = (['overview', 'session', 'tickets', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as TabKey[]).filter(
+  const visibleTabs = (TAB_KEYS as readonly TabKey[]).filter(
     (key) => {
       if ((key === 'invites' || key === 'audit') && role === 'viewer') return false
       return true
@@ -172,6 +176,8 @@ export function ProjectPage() {
 
       <Tabs items={visibleTabs.map((key) => ({ key, label: TAB_LABELS[key] }))} value={tab} onChange={setTab} />
 
+      {tab === 'rooms' ? <RoomsTab {...tabProps} /> : null}
+      {tab === 'roster' ? <RosterTab {...tabProps} /> : null}
       {tab === 'overview' ? <OverviewTab {...tabProps} /> : null}
       {tab === 'session' ? <MainSessionTab {...tabProps} /> : null}
       {tab === 'tickets' ? <TicketsTab {...tabProps} /> : null}

@@ -1,12 +1,12 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
-import { evaluations, usage, type ProjectRow, type ThreadRow } from '../../db/schema.js'
+import { bots, evaluations, roomBots, usage, type ProjectRow, type ThreadRow } from '../../db/schema.js'
 import { newId } from '../../domain/ids.js'
 import { dayKey } from '../../services/usage.js'
 import type { TriggerAddress } from '../domain/types.js'
 import { applyRouterOutput } from './apply.js'
-import { renderBoard, type BoardTicket, type BoardTrigger } from './board.js'
+import { renderBoard, type BoardBot, type BoardTicket, type BoardTrigger } from './board.js'
 import type { RouterModel } from './model.js'
 import { parseRouterOutput, validateRouterOutput } from './output.js'
 import { releaseThread, releaseThreadLease } from '../store/threads.js'
@@ -37,6 +37,8 @@ function toBoardTrigger(row: {
   actorName: string | null
   text: string
   address: TriggerAddress
+  kind?: string
+  targetBotId?: string | null
   createdAt: Date
 }): BoardTrigger {
   return {
@@ -45,6 +47,8 @@ function toBoardTrigger(row: {
     text: row.text,
     at: row.createdAt.toISOString(),
     address: row.address,
+    ...(row.kind ? { kind: row.kind } : {}),
+    ...(row.targetBotId !== undefined ? { targetBotId: row.targetBotId } : {}),
   }
 }
 
@@ -78,15 +82,41 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
   try {
     const recentRows = await listRecentTriggers(input.db, scope, input.recentLimit ?? 10)
     const batchIds = new Set(batch.map((trigger) => trigger.id))
+    const roomId = batch.find((trigger) => trigger.roomId !== null)?.roomId ?? null
+
+    let availableBotRows = await input.db
+      .select()
+      .from(bots)
+      .where(and(eq(bots.projectId, input.project.id), eq(bots.status, 'active')))
+    if (roomId !== null && availableBotRows.length > 0) {
+      const members = await input.db.select({ botId: roomBots.botId }).from(roomBots).where(eq(roomBots.roomId, roomId))
+      if (members.length > 0) {
+        const memberSet = new Set(members.map((m) => m.botId))
+        const filtered = availableBotRows.filter((b) => memberSet.has(b.id))
+        if (filtered.length > 0) availableBotRows = filtered
+      }
+    }
+    const botById = new Map(availableBotRows.map((b) => [b.id, b]))
+    const boardBots: BoardBot[] = availableBotRows.map((bot) => ({
+      id: bot.id,
+      slug: bot.slug,
+      name: bot.name,
+      roleTitle: bot.roleTitle,
+    }))
+
     const tickets = (await listLiveTickets(input.db, input.project.id)).filter(
       (ticket) => ticket.channelId === input.thread.channelId && ticket.threadKey === input.thread.threadKey,
     )
-    const boardTickets: BoardTicket[] = tickets.map((ticket) => ({
-      id: ticket.id,
-      shortName: ticket.shortName ?? ticket.id.slice(0, 8),
-      title: ticket.title,
-      stage: (ticket.stage ?? 'queued') as BoardTicket['stage'],
-    }))
+    const boardTickets: BoardTicket[] = tickets.map((ticket) => {
+      const bot = ticket.botId ? botById.get(ticket.botId) : undefined
+      return {
+        id: ticket.id,
+        shortName: ticket.shortName ?? ticket.id.slice(0, 8),
+        title: ticket.title,
+        stage: (ticket.stage ?? 'queued') as BoardTicket['stage'],
+        ...(bot ? { botSlug: bot.slug } : {}),
+      }
+    })
     const board = renderBoard({
       project: {
         id: input.project.id,
@@ -95,6 +125,7 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
         allowThreadReplies: input.project.policyJson.allowThreadReplies,
       },
       thread: { key: input.thread.threadKey, summary: input.thread.summary },
+      ...(boardBots.length > 0 ? { bots: boardBots } : {}),
       tickets: boardTickets,
       recent: recentRows.filter((row) => !batchIds.has(row.id)).map(toBoardTrigger),
       batch: batch.map(toBoardTrigger),
@@ -108,6 +139,7 @@ export async function flushThread(input: FlushThreadInput): Promise<FlushThreadR
         planApproval: input.project.policyJson.planApproval,
         allowThreadReplies: input.project.policyJson.allowThreadReplies,
       },
+      ...(boardBots.length > 0 ? { bots: boardBots } : {}),
       tickets: boardTickets,
       batch: batch.map(toBoardTrigger),
     })

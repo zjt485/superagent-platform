@@ -1,5 +1,6 @@
 import type { Database } from '../../db/client.js'
 import type { Logger } from '../../logger.js'
+import type { ProjectEventBus } from '../../services/events.js'
 import type { RouterModel } from '../router/model.js'
 import { dispatchOnce } from './dispatcher.js'
 import type { DeliveryProvider } from './delivery.js'
@@ -22,6 +23,7 @@ export interface CoreLoopOptions {
   timeoutMs?: number
   heartbeatMs?: number
   env?: Record<string, string>
+  events?: ProjectEventBus
   log?: Logger
 }
 
@@ -60,6 +62,7 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
             ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
             ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
             ...(options.env === undefined ? {} : { env: options.env }),
+            ...(options.events === undefined ? {} : { events: options.events }),
           }))
         ) {
           dispatched += 1

@@ -94,6 +94,24 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'handoff',
+      description: 'Hand off the next stage of work to another teammate Bot in the same project/room (e.g. @pm, @engineer, @qa).',
+      parameters: {
+        type: 'object',
+        properties: {
+          to_bot_slug: { type: 'string', description: 'Target teammate bot slug (without @)' },
+          summary: { type: 'string', description: 'Brief handoff summary visible in the room' },
+          context: { type: 'string', description: 'Detailed findings, specs, or instructions for the next bot' },
+          expected_output: { type: 'string', description: 'What deliverable is expected from the next bot' },
+        },
+        required: ['to_bot_slug', 'summary', 'context'],
+        additionalProperties: false,
+      },
+    },
+  },
 ] as const
 
 const MAX_FILE_BYTES = 200_000
@@ -249,6 +267,7 @@ export class OpenAiTurnRuntime implements TurnRuntime {
           '这是直连模型运行。使用工具在工作区内完成实现和验证；不要 push、不要创建 PR。完成后直接返回报告 JSON 对象（status/summary/...），不要写 .superagent/result.json，也不要包 output 字段。',
       },
     ]
+    let pendingHandoff: { toBotSlug: string; summary: string; context: string; expectedOutput?: string } | null = null
     for (let step = 0; step < this.options.maxSteps; step += 1) {
       const completion = await this.chat(messages, TOOL_DEFINITIONS, signal)
       account(completion.usage)
@@ -258,6 +277,30 @@ export class OpenAiTurnRuntime implements TurnRuntime {
       if (toolCalls.length > 0) {
         messages.push({ role: 'assistant', content: message.content ?? null, tool_calls: toolCalls })
         for (const call of toolCalls) {
+          if (call.function.name === 'handoff') {
+            try {
+              const parsedArgs = JSON.parse(call.function.arguments || '{}') as JsonObject
+              const toBotSlug = typeof parsedArgs.to_bot_slug === 'string' ? parsedArgs.to_bot_slug.replace(/^@/, '').trim() : ''
+              const summary = typeof parsedArgs.summary === 'string' ? parsedArgs.summary.trim() : ''
+              const context = typeof parsedArgs.context === 'string' ? parsedArgs.context.trim() : summary
+              const expectedOutput = typeof parsedArgs.expected_output === 'string' ? parsedArgs.expected_output.trim() : undefined
+              if (!toBotSlug || !summary) throw new Error('to_bot_slug and summary are required')
+              pendingHandoff = { toBotSlug, summary, context, ...(expectedOutput ? { expectedOutput } : {}) }
+              await input.onEvent({ type: 'handoff', message: `handoff -> @${toBotSlug}`, payload: pendingHandoff })
+              messages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify({ queued: true, to_bot_slug: toBotSlug }),
+              })
+            } catch (error) {
+              messages.push({
+                role: 'tool',
+                tool_call_id: call.id,
+                content: JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+              })
+            }
+            continue
+          }
           const result = await this.executeTool(call.function.name, call.function.arguments, input)
           messages.push({ role: 'tool', tool_call_id: call.id, content: result })
         }
@@ -271,6 +314,9 @@ export class OpenAiTurnRuntime implements TurnRuntime {
       const output = unwrapOutput(parsed)
       if (!output || typeof output !== 'object' || Array.isArray(output)) throw new Error('executor report is not an object')
       if (typeof (output as JsonObject).status !== 'string') throw new Error('executor report is missing status')
+      if (pendingHandoff && !(output as JsonObject).handoff) {
+        return { ...(output as JsonObject), handoff: pendingHandoff }
+      }
       return output
     }
     throw new Error(`executor exceeded the tool step limit (${this.options.maxSteps})`)

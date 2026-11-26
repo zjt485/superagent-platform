@@ -6,25 +6,32 @@ import type { Database } from '../../db/client.js'
 import {
   agentSessions,
   auditLogs,
+  bots,
   mandates,
   outboxEvents,
   projects,
   reports,
+  rooms,
   sessionMessages,
   sessionTurns,
   tickets,
   turnEvents,
   usage,
+  type BotRow,
   type ProjectRow,
   type TicketInputRow,
   type TicketRow,
   type TurnRow,
 } from '../../db/schema.js'
 import { buildExecutorPrompt } from '../agent/prompts.js'
-import type { ExecutorTurnPacket } from '../agent/types.js'
+import type { ExecutorBotPersona, ExecutorTurnPacket } from '../agent/types.js'
 import { newId } from '../../domain/ids.js'
 import { parsePolicy } from '../../domain/policy.js'
+import { formatBotSignature } from '../../services/bots.js'
+import { defaultEventBus, type ProjectEventBus } from '../../services/events.js'
+import { appendRoomMessage } from '../../services/rooms.js'
 import { dayKey } from '../../services/usage.js'
+import { receiveCoreTrigger } from '../intake.js'
 import { nextStage } from '../domain/stage.js'
 import type { Report, TicketStage } from '../domain/types.js'
 import { listUndeliveredInputs, markInputsDelivered } from '../store/inputs.js'
@@ -46,6 +53,7 @@ export interface DispatcherOptions {
   env?: Record<string, string>
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
+  events?: ProjectEventBus
 }
 
 async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefined> {
@@ -164,6 +172,7 @@ async function buildPacket(
   ticket: TicketRow,
   turn: TurnRow,
   inputs: TicketInputRow[],
+  bot: BotRow | null,
 ): Promise<{ packet: ExecutorTurnPacket; prompt: string }> {
   const policyVersion = ticket.policyVersion ?? 'v1'
   const [mandate] = await db.select().from(mandates).where(eq(mandates.ticketId, ticket.id))
@@ -180,8 +189,27 @@ async function buildPacket(
     .orderBy(desc(sessionMessages.createdAt))
     .limit(12)
 
+  let botPersona: ExecutorBotPersona | null = null
+  if (bot !== null) {
+    const projectBots = await db
+      .select({ id: bots.id, slug: bots.slug, name: bots.name, roleTitle: bots.roleTitle })
+      .from(bots)
+      .where(and(eq(bots.projectId, project.id), eq(bots.status, 'active')))
+    botPersona = {
+      id: bot.id,
+      slug: bot.slug,
+      name: bot.name,
+      roleTitle: bot.roleTitle,
+      systemPrompt: bot.systemPrompt,
+      teammates: projectBots
+        .filter((candidate) => candidate.id !== bot.id)
+        .map((candidate) => ({ slug: candidate.slug, name: candidate.name, roleTitle: candidate.roleTitle })),
+    }
+  }
+
   const packet: ExecutorTurnPacket = {
     role: 'executor',
+    ...(botPersona ? { bot: botPersona } : {}),
     project: {
       id: project.id,
       name: project.name,
@@ -302,9 +330,25 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     }
   }
 
+  const assignedBotId = turn.botId ?? ticket.botId ?? null
+  const [assignedBot] =
+    assignedBotId !== null ? await options.db.select().from(bots).where(eq(bots.id, assignedBotId)) : [undefined]
+  const bus = options.events ?? defaultEventBus
+
+  if (assignedBot) {
+    await options.db.update(bots).set({ lastActiveAt: at, updatedAt: at }).where(eq(bots.id, assignedBot.id))
+    bus.publish(project.id, 'bot.status', {
+      botId: assignedBot.id,
+      slug: assignedBot.slug,
+      state: 'working',
+      ticketId: ticket.id,
+      turnId: turn.id,
+    })
+  }
+
   const inputs = await listUndeliveredInputs(options.db, ticket.id)
   await markInputsDelivered(options.db, inputs.map((input) => input.id), turn.id, at)
-  const built = await buildPacket(options.db, project, ticket, turn, inputs)
+  const built = await buildPacket(options.db, project, ticket, turn, inputs, assignedBot ?? null)
   if (inputs.length > 0) {
     await options.db.insert(sessionMessages).values({
       id: newId(),
@@ -364,6 +408,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       signal: controller.signal,
       ...(options.env === undefined ? {} : { env: options.env }),
       onEvent: async (event) => {
+        const eventAt = options.now()
         await options.db
           .insert(turnEvents)
           .values({
@@ -372,9 +417,19 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
             type: event.type.slice(0, 80),
             message: event.message === undefined ? null : event.message.slice(0, 4000),
             payload: event.payload ?? null,
-            createdAt: options.now(),
+            createdAt: eventAt,
           })
           .catch(() => {})
+        bus.publish(project.id, 'turn.event', {
+          turnId: turn.id,
+          ticketId: ticket.id,
+          roomId: ticket.roomId,
+          botId: assignedBot?.id ?? null,
+          type: event.type,
+          message: event.message ?? null,
+          payload: event.payload ?? null,
+          createdAt: eventAt.toISOString(),
+        })
       },
     })
   } catch (error) {
@@ -475,11 +530,79 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     createdAt: finishedAt,
   })
 
-  const next = stageForReport(runningStage, report, {
+  let next = stageForReport(runningStage, report, {
     planApprovalRequired: policy.planApproval === 'required',
     planApproved: ticket.planApprovedAt !== null,
     codeChanged: deliveredCode || (report.changedFiles?.length ?? 0) > 0,
   })
+
+  // Handle explicit multi-bot handoff with maxHops + self-handoff + budget guards.
+  let handoffNotice: string | null = null
+  if (report.handoff !== undefined) {
+    const targetSlug = report.handoff.toBotSlug.replace(/^@/, '').toLowerCase()
+    const [targetBot] = await options.db
+      .select()
+      .from(bots)
+      .where(and(eq(bots.projectId, project.id), eq(bots.slug, targetSlug), eq(bots.status, 'active')))
+    const [roomRow] =
+      ticket.roomId !== null ? await options.db.select().from(rooms).where(eq(rooms.id, ticket.roomId)) : [undefined]
+    const maxHops = roomRow?.maxHandoffHops ?? 5
+    const nextHop = (ticket.handoffHop ?? 0) + 1
+
+    if (!targetBot) {
+      handoffNotice = `无法交接：未找到启用中的 @${targetSlug}。`
+    } else if (assignedBot && targetBot.id === assignedBot.id) {
+      handoffNotice = `已拦截自交接：@${targetBot.slug} 不能连续交接给自己。`
+    } else if (nextHop > maxHops) {
+      next = 'blocked'
+      handoffNotice = `多 Bot 接力已达到最大跳数上限（${maxHops} 跳），已暂停交接给 @${targetBot.slug}，请人工确认是否继续。`
+    } else {
+      const handoffText = [
+        `@${targetBot.slug} ${report.handoff.summary}`,
+        '',
+        report.handoff.context,
+        ...(report.handoff.expectedOutput ? ['', `期望产出：${report.handoff.expectedOutput}`] : []),
+      ].join('\n')
+      const chainId = ticket.handoffChainId ?? ticket.id
+      if (ticket.roomId) {
+        await appendRoomMessage(options.db, {
+          projectId: project.id,
+          roomId: ticket.roomId,
+          threadKey: ticket.threadKey ?? `room:${ticket.roomId}`,
+          authorKind: assignedBot ? 'bot' : 'system',
+          authorBotId: assignedBot?.id ?? null,
+          kind: 'handoff',
+          content: handoffText,
+          ticketId: ticket.id,
+          turnId: turn.id,
+          syncToIm: true,
+          dedupeKey: `handoff-msg:${turn.id}`,
+          at: finishedAt,
+          events: bus,
+        })
+      }
+      await receiveCoreTrigger(options.db, {
+        projectId: project.id,
+        channelId: ticket.channelId,
+        roomId: ticket.roomId,
+        provider: 'handoff',
+        externalId: `handoff:${turn.id}:${targetBot.slug}`,
+        kind: 'handoff',
+        threadKey: ticket.threadKey ?? `handoff:${chainId}`,
+        actorName: assignedBot?.name ?? 'Bot',
+        text: handoffText,
+        address: 'direct',
+        isBot: true,
+        mentionedBot: true,
+        targetBotId: targetBot.id,
+        sourceBotId: assignedBot?.id ?? null,
+        handoffChainId: chainId,
+        handoffHop: nextHop,
+        authorized: project.status === 'active',
+        at: finishedAt,
+      })
+    }
+  }
 
   await setTicketStage(options.db, ticket.id, next, finishedAt)
   await options.db
@@ -514,12 +637,32 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       },
     })
 
+  const baseText = report.prUrl
+    ? `PR 已创建：${report.prUrl}\n${report.summary}`
+    : report.summary.length > 0
+      ? report.summary
+      : `[${ticket.shortName ?? ticket.id}] ${report.status}`
+  const reportText = handoffNotice ? `${baseText}\n\n⚠️ ${handoffNotice}` : baseText
+
+  if (ticket.roomId) {
+    await appendRoomMessage(options.db, {
+      projectId: project.id,
+      roomId: ticket.roomId,
+      threadKey: ticket.threadKey ?? `room:${ticket.roomId}`,
+      authorKind: assignedBot ? 'bot' : 'system',
+      authorBotId: assignedBot?.id ?? null,
+      kind: 'report',
+      content: reportText,
+      attachments: report.prUrl ? [{ type: 'pr', title: 'Pull Request', url: report.prUrl }] : [],
+      ticketId: ticket.id,
+      turnId: turn.id,
+      syncToIm: false,
+      at: finishedAt,
+      events: bus,
+    })
+  }
+
   if (ticket.channelId !== null) {
-    const outboxText = report.prUrl
-      ? `PR 已创建：${report.prUrl}\n${report.summary}`
-      : report.summary.length > 0
-        ? report.summary
-        : `[${ticket.shortName ?? ticket.id}] ${report.status}`
     await options.db
       .insert(outboxEvents)
       .values({
@@ -528,7 +671,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
         channelId: ticket.channelId,
         kind: report.prUrl ? 'pr' : 'reply',
         dedupeKey: `report:${turn.id}`,
-        payload: { text: outboxText },
+        payload: { text: formatBotSignature(assignedBot, reportText) },
         status: 'pending',
         nextAttemptAt: finishedAt,
         createdAt: finishedAt,
@@ -540,6 +683,22 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     .update(agentSessions)
     .set({ status: 'idle', lastTurnAt: finishedAt, updatedAt: finishedAt })
     .where(eq(agentSessions.id, turn.sessionId))
+
+  if (assignedBot) {
+    bus.publish(project.id, 'bot.status', {
+      botId: assignedBot.id,
+      slug: assignedBot.slug,
+      state: 'idle',
+      ticketId: ticket.id,
+      turnId: turn.id,
+    })
+  }
+  bus.publish(project.id, 'ticket.updated', {
+    ticketId: ticket.id,
+    shortName: ticket.shortName,
+    stage: next,
+    prUrl: report.prUrl ?? ticket.prUrl,
+  })
 
   return true
 }

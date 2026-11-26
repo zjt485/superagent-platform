@@ -50,6 +50,13 @@
       "when": 1795313087532,
       "tag": "0006_normal_obadiah_stane",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795648600000,
+      "tag": "0007_bots_and_rooms",
+      "breakpoints": true
     }
   ]
 }

@@ -6,6 +6,8 @@ const decisionItemSchema = z.object({
   triggerId: z.string().min(1),
   action: z.enum(['new', 'attach', 'ignore', 'stop', 'command']),
   ticketId: z.string().min(1).optional(),
+  botSlug: z.string().min(1).optional(),
+  botId: z.string().min(1).optional(),
   title: z.string().min(1).optional(),
   body: z.string().optional(),
   scope: z.string().optional(),

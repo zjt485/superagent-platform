@@ -57,8 +57,18 @@ export interface MainTurnPacket {
   transcript: { role: string; content: string }[]
 }
 
+export interface ExecutorBotPersona {
+  id: string
+  slug: string
+  name: string
+  roleTitle: string
+  systemPrompt: string
+  teammates: Array<{ slug: string; name: string; roleTitle: string }>
+}
+
 export interface ExecutorTurnPacket {
   role: 'executor'
+  bot?: ExecutorBotPersona | null
   project: {
     id: string
     name: string

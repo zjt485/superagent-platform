@@ -36,8 +36,23 @@ export function buildExecutorPrompt(packet: ExecutorTurnPacket): string {
   const inputs = packet.inputs
     .map((input) => `- [${input.source}] ${input.text}`)
     .join('\n')
+  const botSection = packet.bot
+    ? [
+        `# 你的身份\n你是 ${packet.bot.name}（@${packet.bot.slug} · ${packet.bot.roleTitle}）。`,
+        packet.bot.systemPrompt ? packet.bot.systemPrompt : '',
+        packet.bot.teammates.length > 0
+          ? `# 团队同伴（可调用 handoff 工具或输出 handoff 字段交接）\n${packet.bot.teammates
+              .map((mate) => `- @${mate.slug}：${mate.name}（${mate.roleTitle}）`)
+              .join('\n')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    : ''
+
   return [
     EXECUTOR_RULES,
+    botSection,
     `# 项目\n${packet.project.name} (${packet.project.slug})`,
     `# Mandate\n范围：${packet.mandate.scope}\n强度：${packet.mandate.strength}\nPolicy 版本：${packet.mandate.policyVersion}`,
     `# 工单\n编号：${packet.ticket.id}\n标题：${packet.ticket.title}\n需求：\n${packet.ticket.body}`,

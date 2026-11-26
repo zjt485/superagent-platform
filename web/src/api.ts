@@ -350,6 +350,133 @@ export interface RepoCandidate {
   private: boolean
 }
 
+export interface Bot {
+  id: string
+  projectId: string
+  slug: string
+  name: string
+  roleTitle: string
+  avatar: string | null
+  status: 'active' | 'paused' | 'archived'
+  systemPrompt: string
+  modelConfig: {
+    baseUrl?: string
+    apiKeyRef?: string
+    model?: string
+    temperature?: number
+    maxOutputTokens?: number
+    maxSteps?: number
+  }
+  toolPolicy: {
+    allowedTools?: string[]
+    mcpServerIds?: string[]
+    rules?: Record<string, 'allow' | 'confirm' | 'deny'>
+  }
+  sandboxConfig: {
+    mode?: 'local' | 'docker'
+    image?: string
+    memoryMb?: number
+    cpus?: number
+    browserEnabled?: boolean
+    networkMode?: 'none' | 'bridge'
+  }
+  imBinding: {
+    provider?: 'feishu' | 'wecom'
+    botId?: string
+    appId?: string
+    secretRef?: string
+  } | null
+  sandboxState: 'stopped' | 'starting' | 'running' | 'error'
+  containerId: string | null
+  lastActiveAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Room {
+  id: string
+  projectId: string
+  kind: 'group' | 'dm' | 'routine_feed'
+  name: string
+  topic: string | null
+  channelId: string | null
+  dmUserId: string | null
+  defaultBotId: string | null
+  maxHandoffHops: number
+  status: 'active' | 'archived'
+  bots: Array<Pick<Bot, 'id' | 'slug' | 'name' | 'roleTitle' | 'avatar' | 'status' | 'sandboxState'>>
+  lastMessage: { content: string; authorName: string; createdAt: string; kind: string } | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RoomAttachment {
+  type: 'screenshot' | 'file' | 'pr' | 'diff' | 'link' | 'approval'
+  title: string
+  url?: string
+  mimeType?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface RoomMessage {
+  id: string
+  projectId: string
+  roomId: string
+  threadKey: string
+  authorKind: 'user' | 'bot' | 'system'
+  authorUserId: string | null
+  authorBotId: string | null
+  kind: 'chat' | 'handoff' | 'status' | 'approval_card' | 'artifact' | 'report'
+  content: string
+  attachments: RoomAttachment[]
+  ticketId: string | null
+  turnId: string | null
+  authorName: string
+  authorAvatar: string | null
+  botSlug: string | null
+  botRoleTitle: string | null
+  ticketShortName: string | null
+  ticketStage: string | null
+  createdAt: string
+}
+
+export interface ProjectStreamEvent {
+  type: 'room.message' | 'bot.status' | 'turn.event' | 'ticket.updated' | 'approval.created' | 'approval.resolved' | 'routine.run'
+  projectId: string
+  timestamp: string
+  data: Record<string, unknown>
+}
+
+export function subscribeProjectEvents(
+  projectId: string,
+  onEvent: (event: ProjectStreamEvent) => void,
+): () => void {
+  const source = new EventSource(`/v1/projects/${encodeURIComponent(projectId)}/events/stream`, { withCredentials: true })
+  const types: ProjectStreamEvent['type'][] = [
+    'room.message',
+    'bot.status',
+    'turn.event',
+    'ticket.updated',
+    'approval.created',
+    'approval.resolved',
+    'routine.run',
+  ]
+  const handler = (raw: MessageEvent) => {
+    try {
+      const parsed = JSON.parse(String(raw.data)) as ProjectStreamEvent
+      onEvent(parsed)
+    } catch {
+      // ignore malformed frames
+    }
+  }
+  for (const type of types) {
+    source.addEventListener(type, handler as EventListener)
+  }
+  return () => {
+    source.close()
+  }
+}
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -493,5 +620,32 @@ export const api = {
         `/v1/invites/${encodeURIComponent(token)}/accept`,
         { method: 'POST' },
       ),
+  },
+
+  bots: {
+    list: (projectId: string) => request<{ items: Bot[] }>(`/v1/projects/${projectId}/bots`),
+    create: (projectId: string, body: Partial<Bot> & { name: string; roleTitle: string }) =>
+      request<{ bot: Bot }>(`/v1/projects/${projectId}/bots`, { method: 'POST', ...json(body) }),
+    installRdTemplates: (projectId: string) =>
+      request<{ created: Bot[]; items: Bot[] }>(`/v1/projects/${projectId}/bots/templates/rd`, { method: 'POST', ...json({}) }),
+    update: (projectId: string, botId: string, body: Partial<Bot>) =>
+      request<{ bot: Bot }>(`/v1/projects/${projectId}/bots/${botId}`, { method: 'PATCH', ...json(body) }),
+    archive: (projectId: string, botId: string) =>
+      request<{ bot: Bot }>(`/v1/projects/${projectId}/bots/${botId}`, { method: 'DELETE' }),
+  },
+
+  rooms: {
+    list: (projectId: string) => request<{ items: Room[] }>(`/v1/projects/${projectId}/rooms`),
+    create: (projectId: string, body: { kind?: Room['kind']; name?: string; topic?: string; botIds?: string[]; defaultBotId?: string; maxHandoffHops?: number }) =>
+      request<{ room: Room }>(`/v1/projects/${projectId}/rooms`, { method: 'POST', ...json(body) }),
+    update: (projectId: string, roomId: string, body: { name?: string; topic?: string; maxHandoffHops?: number; botIds?: string[]; status?: 'active' | 'archived' }) =>
+      request<{ room: Room }>(`/v1/projects/${projectId}/rooms/${roomId}`, { method: 'PATCH', ...json(body) }),
+    messages: (projectId: string, roomId: string, limit = 100) =>
+      request<{ items: RoomMessage[] }>(`/v1/projects/${projectId}/rooms/${roomId}/messages?limit=${limit}`),
+    postMessage: (projectId: string, roomId: string, body: { content: string; threadKey?: string; targetBotSlug?: string }) =>
+      request<{ message: RoomMessage; triggerId?: string; commandReply?: string }>(`/v1/projects/${projectId}/rooms/${roomId}/messages`, {
+        method: 'POST',
+        ...json(body),
+      }),
   },
 }

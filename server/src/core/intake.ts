@@ -7,8 +7,10 @@ import { markThreadPending, touchThread } from './store/threads.js'
 export interface CoreInbound {
   projectId: string
   channelId: string | null
+  roomId?: string | null
   provider: string
   externalId: string
+  kind?: 'message' | 'command' | 'ci' | 'pr_comment' | 'pr_merge' | 'pr_close' | 'resume' | 'handoff' | 'routine'
   threadKey: string
   actorUserId?: string | null
   actorExternalId?: string | null
@@ -20,6 +22,10 @@ export interface CoreInbound {
   replyTo?: string | null
   raw?: unknown
   authorized?: boolean
+  targetBotId?: string | null
+  sourceBotId?: string | null
+  handoffChainId?: string | null
+  handoffHop?: number
   at: Date
 }
 
@@ -32,7 +38,8 @@ export interface CoreIntakeResult {
 
 /** Store an inbound message for the core Router, preserving intake authorization. */
 export async function receiveCoreTrigger(db: Database, input: CoreInbound): Promise<CoreIntakeResult> {
-  if (input.authorized === false || input.isBot === true) return { action: 'ignored' }
+  const isInternalBotEvent = input.kind === 'handoff' || input.kind === 'routine'
+  if (input.authorized === false || (input.isBot === true && !isInternalBotEvent)) return { action: 'ignored' }
   const text = input.text.trim()
   if (text.length === 0) return { action: 'ignored' }
 
@@ -41,8 +48,10 @@ export async function receiveCoreTrigger(db: Database, input: CoreInbound): Prom
     id: triggerId,
     projectId: input.projectId,
     channelId: input.channelId,
+    roomId: input.roomId ?? null,
     provider: input.provider,
     externalId: input.externalId,
+    kind: input.kind ?? 'message',
     threadKey: input.threadKey,
     actorUserId: input.actorUserId ?? null,
     actorExternalId: input.actorExternalId ?? null,
@@ -53,6 +62,10 @@ export async function receiveCoreTrigger(db: Database, input: CoreInbound): Prom
     replyTo: input.replyTo ?? null,
     raw: input.raw ?? null,
     address: input.address,
+    targetBotId: input.targetBotId ?? null,
+    sourceBotId: input.sourceBotId ?? null,
+    handoffChainId: input.handoffChainId ?? null,
+    handoffHop: input.handoffHop ?? 0,
     createdAt: input.at,
   })
   if (!inserted) return { action: 'duplicate' }
