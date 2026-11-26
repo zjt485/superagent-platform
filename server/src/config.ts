@@ -106,6 +106,7 @@ export const configSchema = z
 
     // Execution.
     WORKSPACES_DIR: text('./data/workspaces'),
+    SANDBOX_IMAGE: text('superagent-bot-sandbox:latest'),
     KEEP_WORKSPACES: boolean(false),
     AGENT_RUNTIME: z.enum(['fake', 'command', 'openai']).default('fake'),
     AGENT_COMMAND: optionalText,

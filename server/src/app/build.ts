@@ -21,6 +21,7 @@ import { registerHealthRoutes } from './routes/health.js'
 import { registerBotRoutes } from './routes/bots.js'
 import { registerRoomRoutes } from './routes/rooms.js'
 import { registerApprovalRoutes } from './routes/approvals.js'
+import { registerConnectorRoutes } from './routes/connectors.js'
 
 const SPA_PREFIXES = ['/v1', '/webhooks', '/internal', '/healthz', '/readyz', '/metrics']
 
@@ -124,6 +125,7 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
   registerBotRoutes(app, ctx)
   registerRoomRoutes(app, ctx)
   registerApprovalRoutes(app, ctx)
+  registerConnectorRoutes(app, ctx)
   registerWebhookRoutes(app, ctx)
   registerInternalRoutes(app, ctx)
 

@@ -64,6 +64,13 @@
       "when": 1795649200000,
       "tag": "0008_action_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795650000000,
+      "tag": "0009_mcp_and_sandbox",
+      "breakpoints": true
     }
   ]
 }

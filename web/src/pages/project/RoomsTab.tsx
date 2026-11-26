@@ -299,10 +299,35 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
               {liveEvents.map((ev) => (
                 <div key={ev.id} className="inspector-item">
                   <div className="inspector-item__head">
-                    <Badge tone={ev.type === 'handoff' ? 'info' : ev.type === 'error' ? 'danger' : 'neutral'} label={ev.type} />
+                    <Badge
+                      tone={
+                        ev.type === 'handoff' || ev.type === 'browser_screenshot'
+                          ? 'info'
+                          : ev.type === 'approval_requested'
+                            ? 'warning'
+                            : ev.type === 'error' || ev.type === 'tool_denied'
+                              ? 'danger'
+                              : 'neutral'
+                      }
+                      label={ev.type}
+                    />
                     <span className="small muted">{relativeTime(ev.at)}</span>
                   </div>
-                  {ev.message ? <div className="mono small" style={{ marginTop: 4, wordBreak: 'break-word' }}>{ev.message}</div> : null}
+                  {ev.message ? (
+                    <pre
+                      className="mono small"
+                      style={{
+                        margin: '4px 0 0',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        background: ev.type === 'terminal_chunk' ? 'rgba(15, 23, 42, 0.06)' : 'transparent',
+                        padding: ev.type === 'terminal_chunk' ? '4px 6px' : 0,
+                        borderRadius: 4,
+                      }}
+                    >
+                      {ev.message}
+                    </pre>
+                  ) : null}
                   {ev.screenshotUrl ? (
                     <a href={ev.screenshotUrl} target="_blank" rel="noreferrer" className="room-screenshot" style={{ marginTop: 6 }}>
                       <img src={ev.screenshotUrl} alt="实时截图" />

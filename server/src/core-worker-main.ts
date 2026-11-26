@@ -11,6 +11,8 @@ import { GitDeliveryProvider } from './core/worker/delivery.js'
 import { RuntimeExecutor } from './core/worker/runtime-executor.js'
 import { createDbWorkspaceProvider } from './core/worker/workspace-provider.js'
 import { startCoreLoop } from './core/worker/loop.js'
+import { createSandboxProvider } from './core/sandbox/docker.js'
+import { McpClient } from './core/mcp/client.js'
 import { FakeGitOps } from './worker/fake-git.js'
 import { RealGitOps } from './worker/git.js'
 
@@ -40,6 +42,12 @@ const loop = startCoreLoop({
   executor: new RuntimeExecutor(createTurnRuntime(config, log)),
   workspace,
   delivery,
+  sandbox: createSandboxProvider({
+    rootDir: config.WORKSPACES_DIR,
+    defaultDockerImage: config.SANDBOX_IMAGE,
+  }),
+  mcpClient: new McpClient(),
+  artifactsRoot: config.WORKSPACES_DIR,
   now: () => new Date(),
   intervalMs: config.CORE_POLL_INTERVAL_MS,
   leaseSeconds: config.RUN_LEASE_SECONDS,

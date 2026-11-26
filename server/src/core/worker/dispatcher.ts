@@ -9,6 +9,7 @@ import {
   auditLogs,
   bots,
   mandates,
+  mcpServers,
   outboxEvents,
   projects,
   reports,
@@ -43,6 +44,9 @@ import { branchName } from '../domain/ids.js'
 import type { DeliveryProvider } from './delivery.js'
 import type { Executor } from './executor.js'
 import type { WorkspaceProvider } from './workspace-provider.js'
+import type { McpClient } from '../mcp/client.js'
+import { BrowserToolRunner } from '../sandbox/browser.js'
+import type { SandboxProvider } from '../sandbox/provider.js'
 
 export interface DispatcherOptions {
   db: Database
@@ -50,11 +54,14 @@ export interface DispatcherOptions {
   now: () => Date
   worktreeRoot?: string
   transcriptRoot?: string
+  artifactsRoot?: string
   timeoutMs?: number
   heartbeatMs?: number
   env?: Record<string, string>
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
+  sandbox?: SandboxProvider
+  mcpClient?: McpClient
   events?: ProjectEventBus
 }
 
@@ -398,6 +405,81 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
     }
   }
 
+  const emitTurnEvent = async (event: { type: string; message?: string; payload?: unknown }) => {
+    const eventAt = options.now()
+    await options.db
+      .insert(turnEvents)
+      .values({
+        projectId: project.id,
+        turnId: turn.id,
+        type: event.type.slice(0, 80),
+        message: event.message === undefined ? null : event.message.slice(0, 4000),
+        payload: event.payload ?? null,
+        createdAt: eventAt,
+      })
+      .catch(() => {})
+    bus.publish(project.id, 'turn.event', {
+      turnId: turn.id,
+      ticketId: ticket.id,
+      roomId: ticket.roomId,
+      botId: assignedBot?.id ?? null,
+      type: event.type,
+      message: event.message ?? null,
+      payload: event.payload ?? null,
+      createdAt: eventAt.toISOString(),
+    })
+  }
+
+  let sandboxHomeDir: string | undefined
+  if (options.sandbox) {
+    try {
+      const handle = await options.sandbox.ensureRunning({
+        botId: assignedBot?.id ?? 'default',
+        workspacePath: worktreePath,
+        ...(assignedBot?.sandboxConfig ? { sandboxConfig: assignedBot.sandboxConfig } : {}),
+      })
+      sandboxHomeDir = handle.homeDir
+      if (assignedBot) {
+        await options.db
+          .update(bots)
+          .set({ sandboxState: 'running', containerId: handle.containerId, updatedAt: at })
+          .where(eq(bots.id, assignedBot.id))
+      }
+    } catch {
+      if (assignedBot) {
+        await options.db
+          .update(bots)
+          .set({ sandboxState: 'error', updatedAt: at })
+          .where(eq(bots.id, assignedBot.id))
+      }
+    }
+  }
+
+  const allEnabledMcp = await options.db
+    .select()
+    .from(mcpServers)
+    .where(and(eq(mcpServers.projectId, project.id), eq(mcpServers.enabled, true)))
+  const allowedMcpIds = assignedBot?.toolPolicy?.mcpServerIds
+  const activeMcpServers =
+    allowedMcpIds && allowedMcpIds.length > 0
+      ? allEnabledMcp.filter((server) => allowedMcpIds.includes(server.id))
+      : allEnabledMcp
+
+  const browserEnabled = assignedBot?.sandboxConfig?.browserEnabled !== false
+  const browserRunner = browserEnabled
+    ? new BrowserToolRunner({
+        db: options.db,
+        rootDir: options.artifactsRoot ?? root,
+        projectId: project.id,
+        ticketId: ticket.id,
+        turnId: turn.id,
+        botId: assignedBot?.id ?? null,
+        ...(sandboxHomeDir ? { botHomeDir: sandboxHomeDir } : {}),
+        now: options.now,
+        onEvent: emitTurnEvent,
+      })
+    : undefined
+
   let report: Report
   let cancelled = false
   try {
@@ -420,33 +502,15 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
       packet: built.packet,
       ...(assignedBot?.toolPolicy ? { toolPolicy: assignedBot.toolPolicy } : {}),
       ...(resumeFrom ? { resumeFrom } : {}),
+      ...(options.sandbox ? { sandbox: options.sandbox, sandboxBotId: assignedBot?.id ?? 'default' } : {}),
+      ...(assignedBot?.sandboxConfig ? { sandboxConfig: assignedBot.sandboxConfig } : {}),
+      ...(browserRunner ? { browser: browserRunner } : {}),
+      ...(activeMcpServers.length > 0 ? { mcpServers: activeMcpServers } : {}),
+      ...(options.mcpClient ? { mcpClient: options.mcpClient } : {}),
       timeoutMs: options.timeoutMs ?? policy.maxRunMinutes * 60_000,
       signal: controller.signal,
       ...(options.env === undefined ? {} : { env: options.env }),
-      onEvent: async (event) => {
-        const eventAt = options.now()
-        await options.db
-          .insert(turnEvents)
-          .values({
-            projectId: project.id,
-            turnId: turn.id,
-            type: event.type.slice(0, 80),
-            message: event.message === undefined ? null : event.message.slice(0, 4000),
-            payload: event.payload ?? null,
-            createdAt: eventAt,
-          })
-          .catch(() => {})
-        bus.publish(project.id, 'turn.event', {
-          turnId: turn.id,
-          ticketId: ticket.id,
-          roomId: ticket.roomId,
-          botId: assignedBot?.id ?? null,
-          type: event.type,
-          message: event.message ?? null,
-          payload: event.payload ?? null,
-          createdAt: eventAt.toISOString(),
-        })
-      },
+      onEvent: emitTurnEvent,
     })
   } catch (error) {
     if (controller.signal.aborted) {
@@ -461,6 +525,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
   } finally {
     if (heartbeatTimer !== null) clearInterval(heartbeatTimer)
     clearInterval(cancelTimer)
+    await browserRunner?.close().catch(() => {})
   }
 
   const finishedAt = options.now()

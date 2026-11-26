@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process'
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import type { McpServerRow } from '../../db/schema.js'
+import { McpClient, mcpQualifiedToolName } from '../mcp/client.js'
 import type { TurnRuntime, TurnRuntimeInput, TurnRuntimeResult } from './types.js'
 import { buildApprovalPreview, evaluateToolPolicy } from './gate.js'
 
@@ -114,6 +116,119 @@ const TOOL_DEFINITIONS = [
     },
   },
 ] as const
+
+const BROWSER_TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'browser_open',
+      description: 'Open an HTTP/HTTPS URL in the Bot browser and inspect its title and content excerpt.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'HTTP or HTTPS URL to open' } },
+        required: ['url'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_click',
+      description: 'Click an element or link on the current page by CSS selector or link text.',
+      parameters: {
+        type: 'object',
+        properties: { selector: { type: 'string', description: 'CSS selector or visible link text' } },
+        required: ['selector'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_type',
+      description: 'Type text into an input element matched by a CSS selector on the current page.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'CSS selector for the input element' },
+          text: { type: 'string', description: 'Text to fill into the input' },
+        },
+        required: ['selector', 'text'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_extract',
+      description: 'Extract readable text and links from the current browser page or a specific selector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'Optional CSS selector or HTML tag' },
+          max_chars: { type: 'number', description: 'Max characters to return (default 6000)' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'browser_screenshot',
+      description: 'Capture a screenshot of the current browser page and attach it as an artifact visible in the Live Inspector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short caption for the screenshot' },
+          full_page: { type: 'boolean', description: 'Whether to capture the full scrollable page' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+] as const
+
+interface ResolvedMcpTool {
+  server: McpServerRow
+  toolName: string
+  canonicalName: string
+}
+
+function buildToolCatalog(input: TurnRuntimeInput): {
+  tools: unknown[]
+  mcpIndex: Map<string, ResolvedMcpTool>
+} {
+  const tools: unknown[] = [...TOOL_DEFINITIONS]
+  if (input.browser) {
+    tools.push(...BROWSER_TOOL_DEFINITIONS)
+  }
+  const mcpIndex = new Map<string, ResolvedMcpTool>()
+  for (const server of input.mcpServers ?? []) {
+    if (!server.enabled) continue
+    for (const descriptor of server.cachedTools ?? []) {
+      const safeServer = server.name.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const safeTool = descriptor.name.replace(/[^a-zA-Z0-9_-]/g, '_')
+      const llmName = `mcp__${safeServer}__${safeTool}`.slice(0, 64)
+      const canonicalName = mcpQualifiedToolName(server.name, descriptor.name)
+      const entry: ResolvedMcpTool = { server, toolName: descriptor.name, canonicalName }
+      mcpIndex.set(llmName, entry)
+      mcpIndex.set(canonicalName, entry)
+      tools.push({
+        type: 'function',
+        function: {
+          name: llmName,
+          description: `[MCP ${server.name}] ${descriptor.description ?? descriptor.name}`,
+          parameters: descriptor.inputSchema ?? { type: 'object', properties: {} },
+        },
+      })
+    }
+  }
+  return { tools, mcpIndex }
+}
 
 const MAX_FILE_BYTES = 200_000
 const MAX_TOOL_OUTPUT = 20_000
@@ -269,6 +384,8 @@ export class OpenAiTurnRuntime implements TurnRuntime {
       },
     ]
 
+    const { tools, mcpIndex } = buildToolCatalog(input)
+
     if (input.resumeFrom) {
       const { checkpoint, decision, comment } = input.resumeFrom
       messages = [...(checkpoint.messages as ChatMessage[])]
@@ -279,7 +396,7 @@ export class OpenAiTurnRuntime implements TurnRuntime {
         payload: { toolName: pending.name, decision, comment: comment ?? null },
       })
       if (decision === 'approved') {
-        const result = await this.executeTool(pending.name, pending.arguments, input)
+        const result = await this.executeTool(pending.name, pending.arguments, input, mcpIndex)
         messages.push({ role: 'tool', tool_call_id: pending.id, content: result })
       } else {
         messages.push({
@@ -296,7 +413,7 @@ export class OpenAiTurnRuntime implements TurnRuntime {
 
     let pendingHandoff: { toBotSlug: string; summary: string; context: string; expectedOutput?: string } | null = null
     for (let step = 0; step < this.options.maxSteps; step += 1) {
-      const completion = await this.chat(messages, TOOL_DEFINITIONS, signal)
+      const completion = await this.chat(messages, tools, signal)
       account(completion.usage)
       const message = completion.choices?.[0]?.message
       if (!message) throw new Error('model returned an empty Executor response')
@@ -312,9 +429,18 @@ export class OpenAiTurnRuntime implements TurnRuntime {
             // let executeTool report invalid arguments
           }
 
-          const gate = evaluateToolPolicy(input.toolPolicy, call.function.name, parsedArgs)
+          const mcpTarget = mcpIndex.get(call.function.name)
+          const gate = evaluateToolPolicy(
+            input.toolPolicy,
+            call.function.name,
+            parsedArgs,
+            mcpTarget
+              ? { mcpDefaultPolicy: mcpTarget.server.defaultToolPolicy, canonicalName: mcpTarget.canonicalName }
+              : {},
+          )
+          const displayToolName = mcpTarget?.canonicalName ?? call.function.name
           if (gate.decision === 'deny') {
-            await input.onEvent({ type: 'tool_denied', message: `${call.function.name}: ${gate.reason}` })
+            await input.onEvent({ type: 'tool_denied', message: `${displayToolName}: ${gate.reason}` })
             messages.push({
               role: 'tool',
               tool_call_id: call.id,
@@ -323,17 +449,17 @@ export class OpenAiTurnRuntime implements TurnRuntime {
             continue
           }
           if (gate.decision === 'confirm') {
-            const preview = buildApprovalPreview(call.function.name, parsedArgs, gate.riskLevel)
+            const preview = buildApprovalPreview(displayToolName, parsedArgs, gate.riskLevel)
             await input.onEvent({
               type: 'approval_requested',
               message: preview.title,
-              payload: { toolName: call.function.name, riskLevel: gate.riskLevel },
+              payload: { toolName: displayToolName, riskLevel: gate.riskLevel },
             })
             return {
               status: 'waiting',
               summary: `操作「${preview.title}」需要人工审批后继续执行。`,
               approvalRequest: {
-                toolName: call.function.name,
+                toolName: displayToolName,
                 toolCallId: call.id,
                 riskLevel: preview.riskLevel,
                 title: preview.title,
@@ -375,7 +501,7 @@ export class OpenAiTurnRuntime implements TurnRuntime {
             }
             continue
           }
-          const result = await this.executeTool(call.function.name, call.function.arguments, input)
+          const result = await this.executeTool(call.function.name, call.function.arguments, input, mcpIndex)
           messages.push({ role: 'tool', tool_call_id: call.id, content: result })
         }
         continue
@@ -425,7 +551,12 @@ export class OpenAiTurnRuntime implements TurnRuntime {
     return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
   }
 
-  private async executeTool(name: string, rawArguments: string, input: TurnRuntimeInput): Promise<string> {
+  private async executeTool(
+    name: string,
+    rawArguments: string,
+    input: TurnRuntimeInput,
+    mcpIndex: Map<string, ResolvedMcpTool>,
+  ): Promise<string> {
     let args: JsonObject
     try {
       const parsed = JSON.parse(rawArguments || '{}') as unknown
@@ -435,7 +566,9 @@ export class OpenAiTurnRuntime implements TurnRuntime {
       return JSON.stringify({ error: `invalid tool arguments: ${error instanceof Error ? error.message : String(error)}` })
     }
     const workspace = path.resolve(input.workspace as string)
-    await input.onEvent({ type: 'tool_call', message: name, payload: summaryFor(name, args) })
+    const mcpTarget = mcpIndex.get(name)
+    const eventName = mcpTarget?.canonicalName ?? name
+    await input.onEvent({ type: 'tool_call', message: eventName, payload: summaryFor(eventName, args) })
     try {
       let output: string
       if (name === 'read_file') {
@@ -469,15 +602,75 @@ export class OpenAiTurnRuntime implements TurnRuntime {
           Math.max(Number(args.timeout_ms ?? 120_000), 1000),
           Math.min(120_000, this.toolTimeoutMs),
         )
-        output = await this.runCommand(workspace, command, timeout)
+        if (input.sandbox) {
+          const res = await input.sandbox.execStream({
+            botId: input.sandboxBotId ?? 'default',
+            workspacePath: workspace,
+            command,
+            timeoutMs: timeout,
+            ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
+            signal: input.signal,
+            onChunk: async (stream, chunk) => {
+              await input.onEvent({
+                type: 'terminal_chunk',
+                message: chunk.slice(0, 1000),
+                payload: { stream, chunk: chunk.slice(0, 2000), command: command.slice(0, 200) },
+              })
+            },
+          })
+          output = commandResult(res.exitCode, res.stdout, res.stderr)
+        } else {
+          output = await this.runCommand(workspace, command, timeout)
+        }
+      } else if (name === 'browser_open') {
+        if (!input.browser) throw new Error('browser tools are disabled for this bot')
+        const url = typeof args.url === 'string' ? args.url.trim() : ''
+        if (!url) throw new Error('url is required')
+        output = JSON.stringify(await input.browser.open(url))
+      } else if (name === 'browser_click') {
+        if (!input.browser) throw new Error('browser tools are disabled for this bot')
+        const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
+        output = JSON.stringify(await input.browser.click(selector))
+      } else if (name === 'browser_type') {
+        if (!input.browser) throw new Error('browser tools are disabled for this bot')
+        const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
+        const text = typeof args.text === 'string' ? args.text : ''
+        output = JSON.stringify(await input.browser.type(selector, text))
+      } else if (name === 'browser_extract') {
+        if (!input.browser) throw new Error('browser tools are disabled for this bot')
+        const selector = typeof args.selector === 'string' ? args.selector : undefined
+        const maxChars = typeof args.max_chars === 'number' ? args.max_chars : 6000
+        output = JSON.stringify(await input.browser.extract(selector, maxChars))
+      } else if (name === 'browser_screenshot') {
+        if (!input.browser) throw new Error('browser tools are disabled for this bot')
+        const title = typeof args.title === 'string' ? args.title : undefined
+        const fullPage = typeof args.full_page === 'boolean' ? args.full_page : false
+        output = JSON.stringify(await input.browser.screenshot({ ...(title ? { title } : {}), fullPage }))
+      } else if (mcpTarget) {
+        const client = input.mcpClient ?? new McpClient()
+        const result = await client.callTool(
+          {
+            id: mcpTarget.server.id,
+            name: mcpTarget.server.name,
+            transport: mcpTarget.server.transport,
+            endpointOrCmd: mcpTarget.server.endpointOrCmd,
+            args: mcpTarget.server.args,
+            envRefs: mcpTarget.server.envRefs,
+            defaultToolPolicy: mcpTarget.server.defaultToolPolicy,
+          },
+          mcpTarget.toolName,
+          args,
+          input.signal,
+        )
+        output = JSON.stringify(result).slice(0, MAX_TOOL_OUTPUT)
       } else {
         throw new Error(`unknown tool: ${name}`)
       }
-      await input.onEvent({ type: 'tool_result', message: name, payload: { ok: true } })
+      await input.onEvent({ type: 'tool_result', message: eventName, payload: { ok: true } })
       return output
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await input.onEvent({ type: 'tool_result', message: name, payload: { ok: false, error: message.slice(0, 500) } })
+      await input.onEvent({ type: 'tool_result', message: eventName, payload: { ok: false, error: message.slice(0, 500) } })
       return JSON.stringify({ error: message.slice(0, 1000) })
     }
   }

@@ -1,5 +1,8 @@
 import { z } from 'zod'
-import type { BotToolPolicy, TurnCheckpoint } from '../../db/schema.js'
+import type { BotSandboxConfig, BotToolPolicy, McpServerRow, TurnCheckpoint } from '../../db/schema.js'
+import type { McpClient } from '../mcp/client.js'
+import type { BrowserToolRunner } from '../sandbox/browser.js'
+import type { SandboxProvider } from '../sandbox/provider.js'
 
 /**
  * Wire protocols between the platform and the agent runtime. External command
@@ -121,6 +124,12 @@ export interface TurnRuntimeInput {
   packet: MainTurnPacket | ExecutorTurnPacket
   toolPolicy?: BotToolPolicy
   resumeFrom?: TurnResumeInput
+  sandbox?: SandboxProvider
+  sandboxBotId?: string
+  sandboxConfig?: BotSandboxConfig
+  browser?: BrowserToolRunner
+  mcpServers?: McpServerRow[]
+  mcpClient?: McpClient
   timeoutMs: number
   signal: AbortSignal
   env: Record<string, string>

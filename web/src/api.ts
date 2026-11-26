@@ -505,6 +505,41 @@ export interface ActionApproval {
   createdAt: string
 }
 
+export interface McpToolDescriptor {
+  name: string
+  description?: string
+  inputSchema?: Record<string, unknown>
+}
+
+export interface McpServer {
+  id: string
+  projectId: string
+  name: string
+  transport: 'stdio' | 'streamable_http' | 'sse'
+  endpointOrCmd: string
+  args: string[]
+  envRefs: Record<string, string>
+  enabled: boolean
+  defaultToolPolicy: 'allow' | 'confirm' | 'confirm_all' | 'deny'
+  cachedTools: McpToolDescriptor[]
+  lastHealthAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ArtifactItem {
+  id: string
+  projectId: string
+  ticketId: string | null
+  turnId: string | null
+  botId: string | null
+  kind: string
+  title: string
+  mimeType: string
+  sizeBytes: number
+  createdAt: string
+}
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -619,6 +654,8 @@ export const api = {
       ),
     bind: (projectId: string, body: { installationId: string; owner: string; name: string; defaultBranch?: string }) =>
       request<{ repo: ProjectBundle['repo'] }>(`/v1/projects/${projectId}/repo`, { method: 'POST', ...json(body) }),
+    bindLocal: (projectId: string, body: { path: string; defaultBranch?: string }) =>
+      request<{ repo: ProjectBundle['repo'] }>(`/v1/projects/${projectId}/local-repo`, { method: 'POST', ...json(body) }),
     unbind: (projectId: string) => request<null>(`/v1/projects/${projectId}/repo`, { method: 'DELETE' }),
     candidates: (projectId: string, installationId?: string) =>
       request<{ items: RepoCandidate[]; mode: 'app' | 'mock' }>(
@@ -691,5 +728,40 @@ export const api = {
         `/v1/projects/${projectId}/approvals/${approvalId}/decide`,
         { method: 'POST', ...json(body) },
       ),
+  },
+
+  mcp: {
+    list: (projectId: string) => request<{ items: McpServer[] }>(`/v1/projects/${projectId}/mcp-servers`),
+    create: (
+      projectId: string,
+      body: {
+        name: string
+        transport?: McpServer['transport']
+        endpointOrCmd: string
+        args?: string[]
+        envRefs?: Record<string, string>
+        enabled?: boolean
+        defaultToolPolicy?: McpServer['defaultToolPolicy']
+      },
+    ) => request<{ server: McpServer }>(`/v1/projects/${projectId}/mcp-servers`, { method: 'POST', ...json(body) }),
+    update: (
+      projectId: string,
+      serverId: string,
+      body: Partial<Pick<McpServer, 'name' | 'transport' | 'endpointOrCmd' | 'args' | 'envRefs' | 'enabled' | 'defaultToolPolicy'>>,
+    ) => request<{ server: McpServer }>(`/v1/projects/${projectId}/mcp-servers/${serverId}`, { method: 'PATCH', ...json(body) }),
+    remove: (projectId: string, serverId: string) =>
+      request<null>(`/v1/projects/${projectId}/mcp-servers/${serverId}`, { method: 'DELETE' }),
+    discover: (projectId: string, serverId: string) =>
+      request<{ server: McpServer; tools: McpToolDescriptor[] }>(`/v1/projects/${projectId}/mcp-servers/${serverId}/discover`, {
+        method: 'POST',
+        ...json({}),
+      }),
+  },
+
+  artifacts: {
+    list: (projectId: string, limit = 30) =>
+      request<{ items: ArtifactItem[] }>(`/v1/projects/${projectId}/artifacts?limit=${limit}`),
+    url: (projectId: string, artifactId: string) =>
+      `/v1/projects/${projectId}/artifacts/${artifactId}`,
   },
 }

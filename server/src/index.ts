@@ -20,6 +20,8 @@ import { routerModelFromConfig } from './core/router/from-config.js'
 import { GitDeliveryProvider } from './core/worker/delivery.js'
 import { createDbWorkspaceProvider } from './core/worker/workspace-provider.js'
 import { reapStaleCoreTurns } from './core/worker/reaper.js'
+import { createSandboxProvider } from './core/sandbox/docker.js'
+import { McpClient } from './core/mcp/client.js'
 
 loadLocalEnv()
 const config = loadConfig()
@@ -82,6 +84,12 @@ const coreLoop = config.INLINE_WORKER
         author: { name: config.GIT_AUTHOR_NAME, email: config.GIT_AUTHOR_EMAIL },
         webBase: config.GITHUB_WEB_BASE,
       }),
+      sandbox: createSandboxProvider({
+        rootDir: config.WORKSPACES_DIR,
+        defaultDockerImage: config.SANDBOX_IMAGE,
+      }),
+      mcpClient: new McpClient(),
+      artifactsRoot: config.WORKSPACES_DIR,
       now: deps.now,
       intervalMs: config.CORE_POLL_INTERVAL_MS,
       leaseSeconds: config.RUN_LEASE_SECONDS,

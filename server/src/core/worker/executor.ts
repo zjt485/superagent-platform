@@ -1,6 +1,9 @@
-import type { BotToolPolicy } from '../../db/schema.js'
+import type { BotSandboxConfig, BotToolPolicy, McpServerRow } from '../../db/schema.js'
 import type { ExecutorTurnPacket, TurnResumeInput } from '../agent/types.js'
 import type { Report } from '../domain/types.js'
+import type { McpClient } from '../mcp/client.js'
+import type { BrowserToolRunner } from '../sandbox/browser.js'
+import type { SandboxProvider } from '../sandbox/provider.js'
 
 export interface TurnContext {
   turnId: string
@@ -21,6 +24,12 @@ export interface TurnContext {
   packet: ExecutorTurnPacket
   toolPolicy?: BotToolPolicy
   resumeFrom?: TurnResumeInput
+  sandbox?: SandboxProvider
+  sandboxBotId?: string
+  sandboxConfig?: BotSandboxConfig
+  browser?: BrowserToolRunner
+  mcpServers?: McpServerRow[]
+  mcpClient?: McpClient
   timeoutMs: number
   signal?: AbortSignal
   env?: Record<string, string>

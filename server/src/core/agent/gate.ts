@@ -7,6 +7,9 @@ const HIGH_RISK_TOOL_PATTERNS = [
   /delete|drop|destroy|publish|deploy|merge|charge|pay|send|post_external/i,
 ]
 
+const MCP_MUTATING_PATTERN =
+  /(create|update|write|edit|delete|remove|drop|destroy|publish|deploy|merge|charge|pay|send|post|comment|trigger|close|archive)/i
+
 const ALWAYS_CONFIRM_TOOLS = new Set([
   'github_push_and_pr',
   'send_email',
@@ -25,14 +28,15 @@ export interface ToolGateDecision {
   reason: string
 }
 
-/**
- * Evaluate whether a tool call should execute automatically (`allow`), pause
- * for human approval (`confirm`), or be rejected (`deny`).
- */
+function isMcpTool(toolName: string): boolean {
+  return toolName.startsWith('mcp:') || toolName.startsWith('mcp__')
+}
+
 export function evaluateToolPolicy(
   policy: BotToolPolicy | null | undefined,
   toolName: string,
   args: Record<string, unknown>,
+  options: { mcpDefaultPolicy?: string; canonicalName?: string } = {},
 ): ToolGateDecision {
   if (toolName === 'run_command' && typeof args.command === 'string') {
     for (const pattern of ALWAYS_DENY_COMMAND_PATTERNS) {
@@ -42,16 +46,17 @@ export function evaluateToolPolicy(
     }
   }
 
-  const explicit = policy?.rules?.[toolName]
+  const canonical = options.canonicalName ?? toolName
+  const explicit = policy?.rules?.[toolName] ?? policy?.rules?.[canonical]
   if (explicit !== undefined) {
     return {
       decision: explicit,
-      riskLevel: HIGH_RISK_TOOL_PATTERNS.some((p) => p.test(toolName)) ? 'high' : 'medium',
+      riskLevel: HIGH_RISK_TOOL_PATTERNS.some((p) => p.test(canonical)) ? 'high' : 'medium',
       reason: `Bot 工具策略配置为 ${explicit}`,
     }
   }
 
-  if (policy?.allowedTools && policy.allowedTools.length > 0 && !toolName.startsWith('mcp:')) {
+  if (policy?.allowedTools && policy.allowedTools.length > 0 && !isMcpTool(canonical)) {
     if (!policy.allowedTools.includes(toolName)) {
       return { decision: 'deny', riskLevel: 'medium', reason: `该 Bot 未授权使用工具 ${toolName}` }
     }
@@ -61,11 +66,21 @@ export function evaluateToolPolicy(
     return { decision: 'confirm', riskLevel: 'high', reason: '高风险对外动作需要人工确认' }
   }
 
-  if (toolName.startsWith('mcp:')) {
-    const isMutating = HIGH_RISK_TOOL_PATTERNS.some((pattern) => pattern.test(toolName))
+  if (isMcpTool(canonical)) {
+    if (options.mcpDefaultPolicy === 'deny') {
+      return { decision: 'deny', riskLevel: 'high', reason: '该 MCP 服务器已配置为禁止调用' }
+    }
+    if (options.mcpDefaultPolicy === 'allow') {
+      return { decision: 'allow', riskLevel: 'medium', reason: '该 MCP 服务器已配置为自动放行' }
+    }
+    if (options.mcpDefaultPolicy === 'confirm_all') {
+      return { decision: 'confirm', riskLevel: 'high', reason: '该 MCP 服务器要求所有工具均需人工确认' }
+    }
+    const isMutating = MCP_MUTATING_PATTERN.test(canonical) || HIGH_RISK_TOOL_PATTERNS.some((p) => p.test(canonical))
     if (isMutating) {
       return { decision: 'confirm', riskLevel: 'high', reason: '外部 MCP 写入/发送操作默认需要人工确认（Suggest, don’t send）' }
     }
+    return { decision: 'allow', riskLevel: 'medium', reason: '外部 MCP 只读查询操作自动放行' }
   }
 
   return { decision: 'allow', riskLevel: 'medium', reason: '工作区内低风险操作' }
@@ -85,7 +100,7 @@ export function buildApprovalPreview(
       preview: { summary: `准备在工作区执行命令`, command: cmd },
     }
   }
-  if (toolName.startsWith('mcp:')) {
+  if (toolName.startsWith('mcp:') || toolName.startsWith('mcp__')) {
     return {
       title: `调用外部连接器：${toolName}`,
       riskLevel,

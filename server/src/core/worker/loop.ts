@@ -1,7 +1,9 @@
 import type { Database } from '../../db/client.js'
 import type { Logger } from '../../logger.js'
 import type { ProjectEventBus } from '../../services/events.js'
+import type { McpClient } from '../mcp/client.js'
 import type { RouterModel } from '../router/model.js'
+import type { SandboxProvider } from '../sandbox/provider.js'
 import { dispatchOnce } from './dispatcher.js'
 import type { DeliveryProvider } from './delivery.js'
 import type { Executor } from './executor.js'
@@ -20,6 +22,9 @@ export interface CoreLoopOptions {
   reapIntervalMs?: number
   workspace?: WorkspaceProvider
   delivery?: DeliveryProvider
+  sandbox?: SandboxProvider
+  mcpClient?: McpClient
+  artifactsRoot?: string
   timeoutMs?: number
   heartbeatMs?: number
   env?: Record<string, string>
@@ -59,6 +64,9 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
             now: options.now,
             ...(options.workspace === undefined ? {} : { workspace: options.workspace }),
             ...(options.delivery === undefined ? {} : { delivery: options.delivery }),
+            ...(options.sandbox === undefined ? {} : { sandbox: options.sandbox }),
+            ...(options.mcpClient === undefined ? {} : { mcpClient: options.mcpClient }),
+            ...(options.artifactsRoot === undefined ? {} : { artifactsRoot: options.artifactsRoot }),
             ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
             ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
             ...(options.env === undefined ? {} : { env: options.env }),

@@ -52,6 +52,13 @@ export const turnKindEnum = pgEnum('turn_kind', ['eval', 'execute', 'resume'])
 export const turnStatusEnum = pgEnum('turn_status', ['queued', 'running', 'waiting_approval', 'succeeded', 'failed', 'cancelled', 'timeout'])
 export const actionApprovalRiskEnum = pgEnum('action_approval_risk', ['medium', 'high'])
 export const actionApprovalStatusEnum = pgEnum('action_approval_status', ['pending', 'approved', 'rejected', 'revision_requested', 'expired'])
+export const mcpTransportEnum = pgEnum('mcp_transport', ['stdio', 'sse', 'streamable_http'])
+
+export interface McpToolDescriptor {
+  name: string
+  description?: string
+  inputSchema?: Record<string, unknown>
+}
 
 export interface TurnCheckpoint {
   messages: unknown[]
@@ -975,6 +982,48 @@ export const actionApprovals = pgTable(
   ],
 )
 
+export const mcpServers = pgTable(
+  'mcp_servers',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    transport: mcpTransportEnum('transport').notNull().default('streamable_http'),
+    endpointOrCmd: text('endpoint_or_cmd').notNull(),
+    args: jsonb('args').$type<string[]>().notNull().default([]),
+    envRefs: jsonb('env_refs').$type<Record<string, string>>().notNull().default({}),
+    enabled: boolean('enabled').notNull().default(true),
+    defaultToolPolicy: text('default_tool_policy').notNull().default('confirm'),
+    cachedTools: jsonb('cached_tools').$type<McpToolDescriptor[]>().notNull().default([]),
+    lastHealthAt: timestamp('last_health_at', { withTimezone: true, mode: 'date' }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [uniqueIndex('mcp_servers_project_name_uq').on(table.projectId, table.name)],
+)
+
+export const artifacts = pgTable(
+  'artifacts',
+  {
+    id: uuid('id').primaryKey(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    ticketId: uuid('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
+    turnId: uuid('turn_id').references(() => sessionTurns.id, { onDelete: 'set null' }),
+    botId: uuid('bot_id').references(() => bots.id, { onDelete: 'set null' }),
+    kind: text('kind').notNull(),
+    title: text('title').notNull(),
+    mimeType: text('mime_type').notNull(),
+    storagePath: text('storage_path').notNull(),
+    sizeBytes: integer('size_bytes').notNull().default(0),
+    createdAt,
+  },
+  (table) => [index('artifacts_project_time_idx').on(table.projectId, table.createdAt)],
+)
+
 export const schema = {
   users,
   identities,
@@ -1011,6 +1060,8 @@ export const schema = {
   roomBots,
   roomMessages,
   actionApprovals,
+  mcpServers,
+  artifacts,
 }
 
 export type Schema = typeof schema
@@ -1033,3 +1084,5 @@ export type BotRow = typeof bots.$inferSelect
 export type RoomRow = typeof rooms.$inferSelect
 export type RoomMessageRow = typeof roomMessages.$inferSelect
 export type ActionApprovalRow = typeof actionApprovals.$inferSelect
+export type McpServerRow = typeof mcpServers.$inferSelect
+export type ArtifactRow = typeof artifacts.$inferSelect
