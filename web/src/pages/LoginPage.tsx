@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { api, ApiError } from '../api'
+import { ApiError } from '../api'
 import { useSession } from '../session'
 import { Button, ErrorNotice, Field, Spinner } from '../components'
 
@@ -35,38 +35,19 @@ export function LoginPage() {
 
   return (
     <div className="auth-page">
-      <aside className="auth-aside">
-        <div>
-          <div className="sidebar__brand" style={{ padding: 0 }}>
-            <span className="brand-mark">S</span>
-            <div>
-              <strong style={{ fontSize: 16 }}>Superagent</strong>
-              <span>Multi-project agent platform</span>
-            </div>
-          </div>
-          <h2>把群里的每一句需求，变成可评审的 PR。</h2>
-          <p>
-            项目组绑定一个 GitHub 仓库和一个 IM 群。成员在群里 @bot 提需求，Agent 在隔离环境中改代码、跑测试、开 PR，
-            全过程可审计，人工负责最终合并。
-          </p>
-          <ul className="auth-points">
-            <li>@bot 自动建单，线程追问自动追加</li>
-            <li>计划与合并都需要人来批准</li>
-            <li>每项目独立策略、并发与预算</li>
-            <li>消息 → 工单 → 运行 → PR 全链路留痕</li>
-          </ul>
-        </div>
-        <p style={{ fontSize: 11, color: '#7d90ac' }}>控制面与 Worker 分离 · 单机 Docker Compose 可部署</p>
-      </aside>
-
       <main className="auth-main">
+        <div className="auth-hero">
+          <span className="brand-mark">S</span>
+          <h1>Superagent</h1>
+          <p>你的 AI 产研团队，7×24 在线协作。</p>
+        </div>
+
         <div className="auth-card">
-          <div className="badge badge--brand">控制台登录</div>
-          <h1>进入项目工作台</h1>
-          <p>使用飞书 / 企业微信账号登录，成员身份由项目邀请决定。</p>
+          <h1>登录</h1>
+          <p>使用飞书 / 企业微信账号进入工作台，成员身份由项目邀请决定。</p>
 
           {hasOauth ? (
-            <div className="form-stack" style={{ marginTop: 20 }}>
+            <div className="form-stack">
               {oauth.feishu ? (
                 <Button variant="primary" className="btn--block" onClick={() => startOauth('feishu')}>
                   使用飞书登录
@@ -79,8 +60,10 @@ export function LoginPage() {
               ) : null}
             </div>
           ) : (
-            <div className="notice notice--info" style={{ marginTop: 20 }}>
-              部署尚未配置飞书 / 企业微信 OAuth。开发环境可使用下方开发登录。
+            <div className="form-stack">
+              <div className="notice notice--info">
+                部署尚未配置飞书 / 企业微信 OAuth。开发环境可使用下方开发登录。
+              </div>
             </div>
           )}
 
@@ -103,8 +86,8 @@ export function LoginPage() {
                   }
                 }}
               >
-                <Field label="昵称" hint="开发登录只用于本地调试；生产环境应关闭 AUTH_DEV_LOGIN。">
-                  <input className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：张三" maxLength={60} required />
+                <Field label="昵称" hint="开发登录仅用于本地调试；生产环境应关闭 AUTH_DEV_LOGIN。">
+                  <input className="input" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：Alice" maxLength={60} required />
                 </Field>
                 <Button variant="primary" className="btn--block" type="submit" loading={busy} disabled={!name.trim()}>
                   进入控制台

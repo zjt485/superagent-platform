@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { api, ApiError, type Bot } from '../../api'
-import { Badge, Button, Card, EmptyState, ErrorNotice, Modal, Spinner, useAsync, useToast } from '../../components'
-import { relativeTime } from '../../format'
+import { Badge, Button, Card, EmptyState, ErrorNotice, Icon, Modal, Spinner, useAsync, useToast } from '../../components'
+import { initials, relativeTime } from '../../format'
 import { canMaintain, type ProjectTabProps } from './types'
 
 export function RosterTab({ project, role, onNavigate }: ProjectTabProps) {
@@ -100,10 +100,11 @@ export function RosterTab({ project, role, onNavigate }: ProjectTabProps) {
           editable ? (
             <div style={{ display: 'flex', gap: 8 }}>
               <Button size="sm" variant="subtle" loading={busy} onClick={installTemplate}>
-                ⚡ 一键导入产研 4 人团队
+                导入产研团队模板
               </Button>
               <Button size="sm" variant="primary" onClick={() => setCreateOpen(true)}>
-                ＋ 新增 Bot
+                <Icon name="plus" size={14} />
+                新增 Bot
               </Button>
             </div>
           ) : null
@@ -124,7 +125,7 @@ export function RosterTab({ project, role, onNavigate }: ProjectTabProps) {
             {bots.map((bot) => (
               <div key={bot.id} className="bot-card">
                 <div className="bot-card__head">
-                  <div className="bot-card__avatar">{bot.avatar ?? '🤖'}</div>
+                  <div className="bot-card__avatar">{initials(bot.name)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <strong>{bot.name}</strong>
@@ -144,7 +145,8 @@ export function RosterTab({ project, role, onNavigate }: ProjectTabProps) {
                 </div>
                 <div className="bot-card__actions">
                   <Button size="sm" variant="subtle" onClick={() => openDm(bot)}>
-                    💬 私聊
+                    <Icon name="chat" size={13} />
+                    私聊
                   </Button>
                   {editable ? (
                     <Button size="sm" variant="subtle" onClick={() => togglePause(bot)}>

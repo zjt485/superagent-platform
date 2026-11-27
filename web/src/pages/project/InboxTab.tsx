@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError, subscribeProjectEvents, type ActionApproval } from '../../api'
 import { Badge, Button, Card, EmptyState, ErrorNotice, Spinner, useAsync, useToast } from '../../components'
-import { relativeTime } from '../../format'
+import { initials, relativeTime } from '../../format'
 import { canMaintain, type ProjectTabProps } from './types'
 
 export function InboxTab({ project, role }: ProjectTabProps) {
@@ -87,7 +87,7 @@ export function InboxTab({ project, role }: ProjectTabProps) {
             {items.map((item) => (
               <div key={item.id} className="bot-card">
                 <div className="bot-card__head">
-                  <div className="bot-card__avatar">{item.botAvatar ?? '🤖'}</div>
+                  <div className="bot-card__avatar">{initials(item.botName ?? 'Bot')}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <strong>{item.title}</strong>

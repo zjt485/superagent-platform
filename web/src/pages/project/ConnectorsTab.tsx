@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, ApiError, type ArtifactItem, type McpServer } from '../../api'
-import { Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, Modal, Spinner, useAsync, useToast } from '../../components'
+import { Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, Icon, Modal, Spinner, useAsync, useToast } from '../../components'
 import { relativeTime } from '../../format'
 import { canMaintain, isOwner, type ProjectTabProps } from './types'
 
@@ -173,7 +173,8 @@ export function ConnectorsTab({ project, role, refresh, onNavigate }: ProjectTab
         extra={
           editable ? (
             <Button size="sm" variant="primary" onClick={() => setCreateOpen(true)}>
-              ＋ 添加 MCP 服务器
+              <Icon name="plus" size={14} />
+              添加 MCP 服务器
             </Button>
           ) : null
         }
@@ -194,7 +195,9 @@ export function ConnectorsTab({ project, role, refresh, onNavigate }: ProjectTab
             {servers.map((server) => (
               <div key={server.id} className="bot-card">
                 <div className="bot-card__head">
-                  <div className="bot-card__avatar">🔌</div>
+                  <div className="bot-card__avatar">
+                    <Icon name="plug" size={18} />
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <strong>{server.name}</strong>
@@ -276,7 +279,7 @@ export function ConnectorsTab({ project, role, refresh, onNavigate }: ProjectTab
                     <img
                       src={url}
                       alt={item.title}
-                      style={{ width: '100%', maxHeight: 150, objectFit: 'cover', borderRadius: 6, border: '1px solid var(--border)' }}
+                      style={{ width: '100%', maxHeight: 150, objectFit: 'cover', borderRadius: 10, border: '1px solid var(--line)' }}
                     />
                   ) : null}
                   <div>

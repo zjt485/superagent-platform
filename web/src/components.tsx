@@ -140,6 +140,89 @@ export function Avatar({ name, size }: { name: string; size?: 'sm' | 'md' }) {
   return <span className={`avatar ${size === 'sm' ? 'avatar--sm' : ''}`}>{initials(name)}</span>
 }
 
+export function initialsOf(name: string): string {
+  return initials(name)
+}
+
+export type IconName =
+  | 'sun'
+  | 'moon'
+  | 'home'
+  | 'power'
+  | 'plus'
+  | 'chevron-down'
+  | 'close'
+  | 'tray'
+  | 'plug'
+  | 'clock'
+  | 'chat'
+  | 'sparkle'
+  | 'check'
+
+export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
+  const paths: Record<IconName, ReactNode> = {
+    sun: (
+      <>
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+      </>
+    ),
+    moon: <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />,
+    home: (
+      <>
+        <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />
+      </>
+    ),
+    power: (
+      <>
+        <path d="M12 2v10" />
+        <path d="M18.36 6.64a9 9 0 1 1-12.73 0" />
+      </>
+    ),
+    plus: <path d="M12 5v14M5 12h14" />,
+    'chevron-down': <path d="m6 9 6 6 6-6" />,
+    close: <path d="M18 6 6 18M6 6l12 12" />,
+    tray: (
+      <>
+        <path d="M4 13V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v7" />
+        <path d="M4 13h4l2 3h4l2-3h4v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" />
+      </>
+    ),
+    plug: (
+      <>
+        <path d="M12 22v-5" />
+        <path d="M9 8V2M15 8V2" />
+        <path d="M7 8h10v4a5 5 0 0 1-10 0z" />
+      </>
+    ),
+    clock: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 7v5l3 2" />
+      </>
+    ),
+    chat: <path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z" />,
+    sparkle: <path d="m12 3 1.8 4.8L18.5 9.5l-4.7 1.7L12 16l-1.8-4.8L5.5 9.5l4.7-1.7z" />,
+    check: <path d="M20 6 9 17l-5-5" />,
+  }
+
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.6}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {paths[name]}
+    </svg>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // States
 // ---------------------------------------------------------------------------
@@ -157,7 +240,7 @@ export function EmptyState({ title, hint, action }: { title: string; hint?: stri
   return (
     <div className="state state--empty">
       <div className="state__mark" aria-hidden>
-        ∅
+        <Icon name="tray" size={22} />
       </div>
       <strong>{title}</strong>
       {hint ? <span>{hint}</span> : null}
@@ -310,7 +393,7 @@ export function Modal({
         <header className="modal__head">
           <h2 id={titleId}>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="关闭">
-            ×
+            <Icon name="close" size={14} />
           </button>
         </header>
         <div className="modal__body">{children}</div>

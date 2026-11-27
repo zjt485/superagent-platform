@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api, type ProjectSummary } from './api'
 import { RequireAuth, SessionProvider, useSession } from './session'
-import { ToastProvider } from './components'
+import { Icon, ToastProvider } from './components'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { ProjectPage } from './pages/ProjectPage'
 import { TicketPage } from './pages/TicketPage'
@@ -22,6 +22,8 @@ function useTheme(): [Theme, () => void] {
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     window.localStorage.setItem('sa-theme', theme)
+    const meta = document.querySelector('meta[name="theme-color"]')
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#000000' : '#f5f5f7')
   }, [theme])
   return [theme, () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))]
 }
@@ -61,7 +63,7 @@ function Shell() {
           <span className="brand-mark">S</span>
           <div>
             <strong>Superagent</strong>
-            <span>Project Console</span>
+            <span>Workspace</span>
           </div>
         </div>
         <nav className="sidebar__nav" aria-label="项目导航">
@@ -78,8 +80,9 @@ function Shell() {
               {project.openTickets > 0 ? <span className="tab__count">{project.openTickets}</span> : null}
             </NavLink>
           ))}
-          <button className="nav-link" onClick={() => navigate('/?new=1')} style={{ background: 'transparent', border: 'none', textAlign: 'left', width: '100%' }}>
-            <span className="nav-link__name">＋ 新建项目</span>
+          <button className="nav-link nav-link--action" onClick={() => navigate('/?new=1')}>
+            <Icon name="plus" size={14} />
+            <span className="nav-link__name">新建项目</span>
           </button>
         </nav>
         <div className="sidebar__foot">
@@ -92,10 +95,10 @@ function Shell() {
           </div>
           <div className="sidebar__actions">
             <button className="icon-btn" onClick={toggleTheme} aria-label="切换主题" title={theme === 'dark' ? '切换到浅色' : '切换到深色'}>
-              {theme === 'dark' ? '☀' : '☾'}
+              <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={15} />
             </button>
             <Link className="icon-btn" to="/" aria-label="返回项目列表" title="项目列表">
-              ⌂
+              <Icon name="home" size={15} />
             </Link>
             <button
               className="icon-btn"
@@ -106,7 +109,7 @@ function Shell() {
                 navigate('/login')
               }}
             >
-              ⏻
+              <Icon name="power" size={15} />
             </button>
           </div>
         </div>
@@ -118,9 +121,7 @@ function Shell() {
             <span aria-hidden>/</span>
             <strong>{activeProjectId ? projects.find((project) => project.id === activeProjectId)?.name ?? '项目' : '全部项目'}</strong>
           </div>
-          <div className="topbar__actions">
-            <span className="badge badge--neutral">MVP v0.1</span>
-          </div>
+          <div className="topbar__actions" />
         </header>
         <main className="content">
           <Routes>

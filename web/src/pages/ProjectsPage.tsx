@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, ApiError, type ProjectSummary } from '../api'
-import { Badge, Button, Card, EmptyState, ErrorNotice, ErrorState, Field, PageHeader, Spinner, useAsync, useToast } from '../components'
+import { Badge, Button, Card, EmptyState, ErrorNotice, ErrorState, Field, Icon, PageHeader, Spinner, useAsync, useToast } from '../components'
 import { ROLE_LABELS, formatDate, relativeTime } from '../format'
 
 function ProjectCard({ project }: { project: ProjectSummary }) {
@@ -87,7 +87,8 @@ export function ProjectsPage() {
         subtitle="一个项目 = 一个 GitHub 仓库 + 一组成员 + 一套策略 + 一个 IM 群。"
         actions={
           <Button variant="primary" onClick={() => setModalOpen(true)}>
-            ＋ 新建项目
+            <Icon name="plus" size={14} />
+            新建项目
           </Button>
         }
       />
@@ -131,7 +132,7 @@ export function ProjectsPage() {
             <header className="modal__head">
               <h2 id="new-project-title">新建项目</h2>
               <button className="icon-btn" onClick={closeModal} aria-label="关闭">
-                ×
+                <Icon name="close" size={14} />
               </button>
             </header>
             <div className="modal__body">

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError, subscribeProjectEvents, type Room, type RoomMessage } from '../../api'
-import { Badge, Button, Card, EmptyState, ErrorNotice, Modal, Spinner, useAsync, useToast } from '../../components'
-import { relativeTime } from '../../format'
+import { Badge, Button, Card, EmptyState, ErrorNotice, Icon, Modal, Spinner, useAsync, useToast } from '../../components'
+import { initials, relativeTime } from '../../format'
 import type { ProjectTabProps } from './types'
 
 interface LiveEventItem {
@@ -135,7 +135,8 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
         <div className="rooms-sidebar__head">
           <strong>协作房间</strong>
           <Button size="sm" variant="subtle" onClick={() => setNewRoomOpen(true)}>
-            ＋ 新建
+            <Icon name="plus" size={13} />
+            新建
           </Button>
         </div>
         <div className="rooms-list">
@@ -148,7 +149,9 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
             >
               <div className="room-item__top">
                 <span className="room-item__name">
-                  {room.kind === 'dm' ? '💬 ' : room.kind === 'routine_feed' ? '⏰ ' : '# '}
+                  <span className="muted">
+                    {room.kind === 'dm' ? '私聊 · ' : room.kind === 'routine_feed' ? '巡检 · ' : '# '}
+                  </span>
                   {room.name}
                 </span>
                 {room.channelId ? <Badge tone="info" label="IM同步" /> : null}
@@ -203,7 +206,6 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
                     title={`点击插入 @${bot.slug}（${bot.roleTitle}）`}
                     onClick={() => setComposer((prev) => `${prev ? `${prev} ` : ''}@${bot.slug} `)}
                   >
-                    <span>{bot.avatar ?? '🤖'}</span>
                     <span>@{bot.slug}</span>
                     <span className="small muted">{bot.roleTitle}</span>
                   </button>
@@ -224,7 +226,7 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
               ) : (
                 messages.map((msg) => (
                   <div key={msg.id} className={`room-msg room-msg--${msg.kind} room-msg--${msg.authorKind}`}>
-                    <div className="room-msg__avatar">{msg.authorAvatar ?? msg.authorName.slice(0, 1).toUpperCase()}</div>
+                    <div className="room-msg__avatar">{initials(msg.authorName)}</div>
                     <div className="room-msg__body">
                       <div className="room-msg__head">
                         <strong>{msg.authorName}</strong>
@@ -249,7 +251,7 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
                               </a>
                             ) : att.url ? (
                               <a key={idx} href={att.url} target="_blank" rel="noreferrer" className="badge badge--info">
-                                📎 {att.title}
+                                {att.title}
                               </a>
                             ) : null,
                           )}
@@ -320,7 +322,7 @@ export function RoomsTab({ project, onNavigate }: ProjectTabProps) {
                         margin: '4px 0 0',
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
-                        background: ev.type === 'terminal_chunk' ? 'rgba(15, 23, 42, 0.06)' : 'transparent',
+                        background: ev.type === 'terminal_chunk' ? 'var(--surface-2)' : 'transparent',
                         padding: ev.type === 'terminal_chunk' ? '4px 6px' : 0,
                         borderRadius: 4,
                       }}

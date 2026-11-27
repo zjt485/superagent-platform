@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api, ApiError, type ProjectStatus } from '../api'
-import { Badge, Button, ConfirmButton, ErrorNotice, ErrorState, PageHeader, Spinner, Tabs, useAsync, useToast } from '../components'
+import { Badge, Button, ConfirmButton, ErrorNotice, ErrorState, Icon, PageHeader, Spinner, Tabs, useAsync, useToast } from '../components'
 import { labelOf } from '../format'
 import { canMaintain, isOwner, type ProjectTabProps } from './project/types'
 import { OverviewTab } from './project/OverviewTab'
@@ -20,7 +20,9 @@ import { SettingsTab } from './project/SettingsTab'
 import { AuditTab } from './project/AuditTab'
 import { UsageTab } from './project/UsageTab'
 
-const TAB_KEYS = ['rooms', 'roster', 'inbox', 'routines', 'connectors', 'overview', 'tickets', 'session', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
+const PRIMARY_TABS = ['rooms', 'roster', 'inbox', 'routines', 'connectors'] as const
+const SECONDARY_TABS = ['overview', 'tickets', 'session', 'members', 'channel', 'repo', 'invites', 'settings', 'audit', 'usage'] as const
+const TAB_KEYS = [...PRIMARY_TABS, ...SECONDARY_TABS] as const
 type TabKey = (typeof TAB_KEYS)[number]
 
 const TAB_LABELS: Record<TabKey, string> = {
@@ -39,6 +41,73 @@ const TAB_LABELS: Record<TabKey, string> = {
   settings: '设置',
   audit: '审计',
   usage: '用量',
+}
+
+function MoreMenu({
+  items,
+  activeTab,
+  onSelect,
+}: {
+  items: TabKey[]
+  activeTab: TabKey
+  onSelect: (key: TabKey) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const isSecondary = (SECONDARY_TABS as readonly string[]).includes(activeTab)
+
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative', flexShrink: 0 }}>
+      <Button
+        size="sm"
+        variant="subtle"
+        className={isSecondary ? 'more-btn--active' : undefined}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span>{isSecondary ? TAB_LABELS[activeTab] : '更多'}</span>
+        <Icon name="chevron-down" size={14} />
+      </Button>
+      {open ? (
+        <div className="more-menu" role="menu">
+          {items.map((key) => (
+            <button
+              key={key}
+              type="button"
+              role="menuitem"
+              className={`more-menu__item ${activeTab === key ? 'more-menu__item--active' : ''}`}
+              onClick={() => {
+                setOpen(false)
+                onSelect(key)
+              }}
+            >
+              <span>{TAB_LABELS[key]}</span>
+              {activeTab === key ? <Icon name="check" size={14} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 export function ProjectPage() {
@@ -87,12 +156,11 @@ export function ProjectPage() {
   }
 
   const tabProps: ProjectTabProps = { project, role, refresh: state.reload, onNavigate: setTab }
-  const visibleTabs = (TAB_KEYS as readonly TabKey[]).filter(
-    (key) => {
-      if ((key === 'invites' || key === 'audit') && role === 'viewer') return false
-      return true
-    },
-  )
+  const visibleSecondary = (SECONDARY_TABS as readonly TabKey[]).filter((key) => {
+    if ((key === 'invites' || key === 'audit') && role === 'viewer') return false
+    return true
+  })
+  const activePrimary = (PRIMARY_TABS as readonly string[]).includes(tab) ? tab : ''
 
   return (
     <>
@@ -180,7 +248,14 @@ export function ProjectPage() {
         </div>
       ) : null}
 
-      <Tabs items={visibleTabs.map((key) => ({ key, label: TAB_LABELS[key] }))} value={tab} onChange={setTab} />
+      <div className="project-nav">
+        <Tabs
+          items={PRIMARY_TABS.map((key) => ({ key, label: TAB_LABELS[key] }))}
+          value={activePrimary}
+          onChange={setTab}
+        />
+        <MoreMenu items={visibleSecondary} activeTab={tab} onSelect={setTab} />
+      </div>
 
       {tab === 'rooms' ? <RoomsTab {...tabProps} /> : null}
       {tab === 'roster' ? <RosterTab {...tabProps} /> : null}

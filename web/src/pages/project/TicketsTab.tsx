@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api, ApiError } from '../../api'
-import { Badge, Button, Card, EmptyState, ErrorNotice, ErrorState, Field, Modal, Spinner, useAsync, useToast } from '../../components'
+import { Badge, Button, Card, EmptyState, ErrorNotice, ErrorState, Field, Icon, Modal, Spinner, useAsync, useToast } from '../../components'
 import { labelOf, relativeTime } from '../../format'
 import type { ProjectTabProps } from './types'
 
@@ -92,7 +92,8 @@ export function TicketsTab({ project, role }: ProjectTabProps) {
         </Button>
         <div className="filters__spacer" />
         <Button variant="primary" size="sm" onClick={() => setModalOpen(true)} disabled={!canCreate} title={canCreate ? '' : project.status !== 'active' ? '项目未启用' : '当前角色不能建单'}>
-          ＋ 新建工单
+          <Icon name="plus" size={14} />
+          新建工单
         </Button>
       </div>
 

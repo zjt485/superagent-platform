@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError, subscribeProjectEvents, type Bot, type Room, type Routine } from '../../api'
-import { Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, Modal, Spinner, useAsync, useToast } from '../../components'
-import { relativeTime } from '../../format'
+import { Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, Icon, Modal, Spinner, useAsync, useToast } from '../../components'
+import { initials, relativeTime } from '../../format'
 import { canMaintain, type ProjectTabProps } from './types'
 
 const CRON_PRESETS = [
@@ -131,7 +131,8 @@ export function RoutinesTab({ project, role }: ProjectTabProps) {
         extra={
           editable ? (
             <Button size="sm" variant="primary" onClick={() => setModalOpen(true)}>
-              ＋ 新建巡检任务
+              <Icon name="plus" size={14} />
+              新建巡检任务
             </Button>
           ) : null
         }
@@ -153,7 +154,9 @@ export function RoutinesTab({ project, role }: ProjectTabProps) {
             {items.map((item) => (
               <div key={item.id} className="bot-card">
                 <div className="bot-card__head">
-                  <div className="bot-card__avatar">{item.botAvatar ?? '⏰'}</div>
+                  <div className="bot-card__avatar">
+                    {item.botName ? initials(item.botName) : <Icon name="clock" size={18} />}
+                  </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <strong>{item.name}</strong>
@@ -263,7 +266,7 @@ export function RoutinesTab({ project, role }: ProjectTabProps) {
                 <option value="">Router 自动选择</option>
                 {bots.map((bot) => (
                   <option key={bot.id} value={bot.id}>
-                    {bot.avatar ?? '🤖'} {bot.name} (@{bot.slug})
+                    {bot.name} (@{bot.slug})
                   </option>
                 ))}
               </select>

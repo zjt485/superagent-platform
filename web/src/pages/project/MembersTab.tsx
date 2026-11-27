@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, ApiError, type Member } from '../../api'
-import { Avatar, Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, ErrorState, Field, Modal, RoleBadge, Spinner, useAsync, useToast } from '../../components'
+import { Avatar, Badge, Button, Card, ConfirmButton, EmptyState, ErrorNotice, ErrorState, Field, Icon, Modal, RoleBadge, Spinner, useAsync, useToast } from '../../components'
 import { ROLE_LABELS, formatDate } from '../../format'
 import type { ProjectTabProps } from './types'
 import { isOwner } from './types'
@@ -71,7 +71,8 @@ export function MembersTab({ project, role }: ProjectTabProps) {
         </span>
         <div className="filters__spacer" />
         <Button variant="primary" size="sm" onClick={() => setModalOpen(true)} disabled={!owner}>
-          ＋ 添加成员
+          <Icon name="plus" size={14} />
+          添加成员
         </Button>
       </div>
 
