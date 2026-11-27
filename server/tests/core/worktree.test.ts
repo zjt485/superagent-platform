@@ -81,4 +81,27 @@ describe('project mirror and ticket worktree', () => {
     expect(await removeTicketWorktree({ mirrorDir: mirror, worktreeDir: clean })).toBe('removed')
     expect(await removeTicketWorktree({ mirrorDir: mirror, worktreeDir: clean })).toBe('missing')
   })
+
+  it('preserves unpushed ticket branch history across ensureMirror refreshes', async () => {
+    const origin = await makeOrigin()
+    const root = await mkdtemp(join(tmpdir(), 'sa-mirror-'))
+    roots.push(root)
+    const mirror = join(root, 'project.git')
+    const worktree = join(root, 'ticket')
+
+    await ensureMirror({ remoteUrl: origin, mirrorDir: mirror })
+    await createTicketWorktree({ mirrorDir: mirror, worktreeDir: worktree, branch: 'agent/t-keep', baseRef: 'main' })
+    await git(worktree, ['config', 'user.name', 'Test'])
+    await git(worktree, ['config', 'user.email', 'test@example.com'])
+    await writeFile(join(worktree, 'doc.md'), 'hello\n', 'utf8')
+    await git(worktree, ['add', '-A'])
+    await git(worktree, ['commit', '-qm', 'add doc'])
+
+    // Refresh mirror before push (e.g. on retry turn): must NOT prune local agent/t-keep branch!
+    await ensureMirror({ remoteUrl: origin, mirrorDir: mirror })
+    const log = await git(worktree, ['log', '--oneline'])
+    expect(log).toContain('add doc')
+    expect(log).toContain('init')
+    expect((await git(worktree, ['rev-list', '--count', 'origin/main..HEAD'])).trim()).toBe('1')
+  })
 })

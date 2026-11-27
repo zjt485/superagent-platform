@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { and, asc, count, desc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
+import type { Logger } from '../../logger.js'
 import {
   actionApprovals,
   agentSessions,
@@ -64,6 +65,7 @@ export interface DispatcherOptions {
   sandbox?: SandboxProvider
   mcpClient?: McpClient
   events?: ProjectEventBus
+  log?: Logger
 }
 
 async function claimNextTurn(db: Database, at: Date): Promise<TurnRow | undefined> {
@@ -675,6 +677,7 @@ export async function dispatchOnce(options: DispatcherOptions): Promise<boolean>
         status: 'failed',
         summary: `交付失败：${error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500)}`,
       }
+      options.log?.warn({ err: error, ticketId: ticket.id }, 'core delivery failed')
     }
   }
 

@@ -53,6 +53,7 @@ export class GitDeliveryProvider implements DeliveryProvider {
       const committed = await this.options.git.createBranchAndCommit({
         dir: input.worktreePath,
         branch,
+        baseBranch: repo.defaultBranch,
         message: `feat: ${input.ticket.title.slice(0, 120)}\n\nSuperagent ticket ${input.ticket.id}`,
         author: this.options.author,
         env: {},
@@ -66,6 +67,7 @@ export class GitDeliveryProvider implements DeliveryProvider {
     const committed = await this.options.git.createBranchAndCommit({
       dir: input.worktreePath,
       branch,
+      baseBranch: repo.defaultBranch,
       message: `feat: ${input.ticket.title.slice(0, 120)}\n\nSuperagent ticket ${input.ticket.id}`,
       author: this.options.author,
       env,

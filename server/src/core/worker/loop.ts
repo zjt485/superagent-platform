@@ -66,7 +66,16 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
             ...(options.events ? { events: options.events } : {}),
           })
         }
-        const routed = await coreTick({ db: options.db, model: options.model, now: options.now, maxThreads: 10 })
+        const routed = await coreTick({
+          db: options.db,
+          model: options.model,
+          now: options.now,
+          maxThreads: 10,
+          ...(options.log ? { log: options.log } : {}),
+        })
+        if (routed.runs > 0 || routed.errors > 0) {
+          options.log?.info(routed, 'core router sweep')
+        }
         let dispatched = 0
         while (
           !stopping &&
@@ -83,9 +92,11 @@ export function startCoreLoop(options: CoreLoopOptions): CoreLoop {
             ...(options.heartbeatMs === undefined ? {} : { heartbeatMs: options.heartbeatMs }),
             ...(options.env === undefined ? {} : { env: options.env }),
             ...(options.events === undefined ? {} : { events: options.events }),
+            ...(options.log === undefined ? {} : { log: options.log }),
           }))
         ) {
           dispatched += 1
+          options.log?.info({ dispatched }, 'core executor turn completed')
           if (options.maxRounds !== undefined && dispatched >= options.maxRounds) break
         }
         if (routed.threads === 0 && dispatched === 0) await sleep(intervalMs)

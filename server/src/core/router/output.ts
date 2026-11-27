@@ -2,20 +2,62 @@ import { z } from 'zod'
 
 import type { RouterOutput } from '../domain/types.js'
 
+const optionalNonEmptyString = z.preprocess(
+  (value) => {
+    if (value === null || value === undefined) return undefined
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      return trimmed.length > 0 ? trimmed : undefined
+    }
+    return value
+  },
+  z.string().min(1).optional(),
+)
+
+const optionalBotSlug = z.preprocess(
+  (value) => {
+    if (value === null || value === undefined) return undefined
+    if (typeof value === 'string') {
+      const trimmed = value.trim().replace(/^[@＠]+/, '')
+      return trimmed.length > 0 ? trimmed : undefined
+    }
+    return value
+  },
+  z.string().min(1).optional(),
+)
+
+const optionalString = z.preprocess((value) => (value === null ? undefined : value), z.string().optional())
+
+const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
+  z.preprocess(
+    (value) => (value === null || value === undefined || (typeof value === 'string' && value.trim() === '') ? undefined : value),
+    z.enum(values).optional(),
+  )
+
+const optionalConfidence = z.preprocess((value) => (value === null || value === '' ? undefined : value), z.number().min(0).max(1).optional())
+
+const optionalPayload = z.preprocess(
+  (value) => (value === null || value === undefined ? undefined : value),
+  z.record(z.string(), z.unknown()).optional(),
+)
+
 const decisionItemSchema = z.object({
   triggerId: z.string().min(1),
   action: z.enum(['new', 'attach', 'ignore', 'stop', 'command']),
-  ticketId: z.string().min(1).optional(),
-  botSlug: z.string().min(1).optional(),
-  botId: z.string().min(1).optional(),
-  title: z.string().min(1).optional(),
-  body: z.string().optional(),
-  scope: z.string().optional(),
-  planApproval: z.enum(['required', 'auto']).optional(),
-  priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(),
-  reason: z.string().min(1),
-  confidence: z.number().min(0).max(1).optional(),
-  payload: z.record(z.string(), z.unknown()).optional(),
+  ticketId: optionalNonEmptyString,
+  botSlug: optionalBotSlug,
+  botId: optionalNonEmptyString,
+  title: optionalNonEmptyString,
+  body: optionalString,
+  scope: optionalString,
+  planApproval: optionalEnum(['required', 'auto'] as const),
+  priority: optionalEnum(['low', 'normal', 'high', 'urgent'] as const),
+  reason: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'router decision'),
+    z.string().min(1),
+  ),
+  confidence: optionalConfidence,
+  payload: optionalPayload,
 })
 
 const routerOutputSchema = z.object({
@@ -46,7 +88,11 @@ function assertActionShape(item: z.infer<typeof decisionItemSchema>): void {
 export function parseRouterOutput(raw: unknown): RouterOutput {
   const parsed = routerOutputSchema.safeParse(raw)
   if (!parsed.success) {
-    throw new RouterOutputError('invalid router output', parsed.error)
+    const issueSummary = parsed.error.issues
+      .slice(0, 3)
+      .map((issue) => `${issue.path.join('.') || 'root'}: ${issue.message}`)
+      .join('; ')
+    throw new RouterOutputError(`invalid router output (${issueSummary})`, parsed.error)
   }
   const seen = new Set<string>()
   for (const item of parsed.data.items) {

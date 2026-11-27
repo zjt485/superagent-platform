@@ -67,7 +67,7 @@ export function renderBoard(input: BoardInput, options: RenderBoardOptions = {})
   )
   lines.push('')
 
-  lines.push('## Thread')
+  lines.push('## Thread (historical context only)')
   lines.push(input.thread.summary === null || input.thread.summary.trim() === '' ? '(no summary)' : clip(input.thread.summary, max * 4))
   lines.push('')
 

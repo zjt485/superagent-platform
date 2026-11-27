@@ -46,14 +46,33 @@ async function git(
   }
 }
 
-/** Create or refresh the bare mirror for one project. */
+/** Create or refresh the bare cache repo for one project. */
 export async function ensureMirror(input: EnsureMirrorInput): Promise<void> {
   if (existsSync(`${input.mirrorDir}/HEAD`)) {
+    // Ensure legacy `--mirror` clones don't wipe local `refs/heads/agent/*`
+    // worktree branches on `fetch --prune` or block explicit push refspecs.
+    await git(['--git-dir', input.mirrorDir, 'config', '--unset-all', 'remote.origin.mirror']).catch(() => {})
+    await git(['--git-dir', input.mirrorDir, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'])
     await git(['--git-dir', input.mirrorDir, 'fetch', '--prune', 'origin'], { env: input.env })
     return
   }
   await mkdir(dirname(input.mirrorDir), { recursive: true })
-  await git(['clone', '--mirror', input.remoteUrl, input.mirrorDir], { env: input.env })
+  await git(['clone', '--bare', input.remoteUrl, input.mirrorDir], { env: input.env })
+  await git(['--git-dir', input.mirrorDir, 'config', 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'])
+  await git(['--git-dir', input.mirrorDir, 'fetch', '--prune', 'origin'], { env: input.env })
+}
+
+async function resolveBaseRef(mirrorDir: string, requested?: string, env?: Record<string, string>): Promise<string> {
+  const candidates = requested && requested !== 'HEAD'
+    ? [`refs/remotes/origin/${requested}`, requested, 'refs/remotes/origin/HEAD', 'HEAD']
+    : ['refs/remotes/origin/HEAD', 'HEAD']
+  for (const ref of candidates) {
+    const ok = await git(['--git-dir', mirrorDir, 'rev-parse', '--verify', ref], { ...(env ? { env } : {}) })
+      .then(() => true)
+      .catch(() => false)
+    if (ok) return ref
+  }
+  return requested ?? 'HEAD'
 }
 
 /** Create a branch-backed worktree for one ticket, reusing an existing directory. */
@@ -62,16 +81,17 @@ export async function createTicketWorktree(input: CreateWorktreeInput): Promise<
   await mkdir(dirname(input.worktreeDir), { recursive: true })
   const branchExists = await git(
     ['--git-dir', input.mirrorDir, 'rev-parse', '--verify', `refs/heads/${input.branch}`],
-    { env: input.env },
+    { ...(input.env ? { env: input.env } : {}) },
   )
     .then(() => true)
     .catch(() => false)
   if (branchExists) {
     await git(['--git-dir', input.mirrorDir, 'worktree', 'add', input.worktreeDir, input.branch], {
-      env: input.env,
+      ...(input.env ? { env: input.env } : {}),
     })
     return
   }
+  const baseRef = await resolveBaseRef(input.mirrorDir, input.baseRef, input.env)
   await git(
     [
       '--git-dir',
@@ -81,9 +101,9 @@ export async function createTicketWorktree(input: CreateWorktreeInput): Promise<
       '-b',
       input.branch,
       input.worktreeDir,
-      input.baseRef ?? 'HEAD',
+      baseRef,
     ],
-    { env: input.env },
+    { ...(input.env ? { env: input.env } : {}) },
   )
 }
 

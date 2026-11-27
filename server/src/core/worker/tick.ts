@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm'
 
 import type { Database } from '../../db/client.js'
+import type { Logger } from '../../logger.js'
 import { projects } from '../../db/schema.js'
 import { flushThread } from '../router/flush.js'
 import type { RouterModel } from '../router/model.js'
@@ -16,6 +17,7 @@ export interface CoreTickOptions {
   batchLimit?: number
   recentLimit?: number
   shortName?: () => string
+  log?: Logger
 }
 
 export interface CoreTickResult {
@@ -59,8 +61,9 @@ export async function coreTick(options: CoreTickOptions): Promise<CoreTickResult
       if (flushed.runId !== null) result.runs += 1
       result.tickets += flushed.ticketIds.length
       result.turns += flushed.turnIds.length
-    } catch {
+    } catch (error) {
       // flushThread already marked the batch pending_review and released the thread.
+      options.log?.warn({ err: error, threadId: thread.id, projectId: project.id }, 'router flush failed')
       result.errors += 1
     }
   }

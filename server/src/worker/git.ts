@@ -13,6 +13,7 @@ export interface GitCloneInput {
 export interface GitCommitInput {
   dir: string
   branch: string
+  baseBranch?: string
   message: string
   author: { name: string; email: string }
   env: Record<string, string>
@@ -54,7 +55,22 @@ export class RealGitOps implements GitOps {
     }
     await this.exec(['add', '-A'], { cwd: input.dir, env: input.env })
     const status = await this.exec(['status', '--porcelain'], { cwd: input.dir, env: input.env })
-    if (!status.stdout.trim()) return false
+    if (!status.stdout.trim()) {
+      // The agent runtime may have already committed its changes directly on
+      // the ticket branch. Still treat the branch as deliverable if HEAD is
+      // ahead of the base branch.
+      const base = input.baseBranch?.trim() || 'main'
+      for (const ref of [`origin/${base}`, base]) {
+        try {
+          const ahead = await this.exec(['rev-list', '--count', `${ref}..HEAD`], { cwd: input.dir, env: input.env })
+          if (Number(ahead.stdout.trim()) > 0) return true
+          return false
+        } catch {
+          // try next base ref
+        }
+      }
+      return false
+    }
     await this.exec(
       [
         '-c',
@@ -71,7 +87,12 @@ export class RealGitOps implements GitOps {
   }
 
   async push(input: { dir: string; branch: string; env: Record<string, string> }): Promise<void> {
-    await this.exec(['push', 'origin', `HEAD:refs/heads/${input.branch}`], { cwd: input.dir, env: input.env })
+    // Ticket worktrees are checked out from a bare `--mirror` repo whose
+    // config sets `remote.origin.mirror = true`, which rejects explicit refspecs.
+    await this.exec(['-c', 'remote.origin.mirror=false', 'push', 'origin', `HEAD:refs/heads/${input.branch}`], {
+      cwd: input.dir,
+      env: input.env,
+    })
   }
 
   async diffStat(dir: string): Promise<string> {
