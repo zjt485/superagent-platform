@@ -138,7 +138,9 @@ async function tryBindUnboundChat(ctx: CoreContext, message: InboundMessage): Pr
     .where(and(eq(channels.provider, message.provider), eq(channels.externalChatId, message.externalChatId)))
   if (!channel) return { action: 'ignored', reason: 'bind_failed' }
   const stored = await insertMessage(ctx, channel, message, userId, threadKeyFor(message))
-  await notifications.message(ctx, project, channel.id, `✅ 已将本群绑定到项目「${project.name}」（${project.slug}）。`, message.providerMessageId, `bind:${stored.row.id}`)
+  await ensureChannelRoom(ctx.db, project.id, channel, ctx.now())
+  const targetLabel = message.externalChatId.startsWith('p2p:') ? '当前单聊会话' : '本群'
+  await notifications.message(ctx, project, channel.id, `✅ 已将${targetLabel}绑定到项目「${project.name}」（${project.slug}）。`, message.providerMessageId, `bind:${stored.row.id}`)
   await audit(ctx, {
     projectId: project.id,
     actorId: userId,

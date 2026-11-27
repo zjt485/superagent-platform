@@ -71,7 +71,8 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: AppContext): void 
     })
     setOAuthCookie(reply, state)
     const redirectUri = `${ctx.config.PUBLIC_BASE_URL}/v1/auth/${provider}/callback`
-    return reply.redirect(oauth.authorizeUrl({ state, redirectUri }))
+    const userAgent = typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null
+    return reply.redirect(oauth.authorizeUrl({ state, redirectUri, userAgent }))
   })
 
   app.get('/v1/auth/:provider/callback', async (request, reply) => {

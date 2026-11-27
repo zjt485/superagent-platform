@@ -586,11 +586,13 @@ const CSRF_HEADER = { 'x-superagent-csrf': '1' }
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('accept', 'application/json')
-  if (init.body !== undefined) headers.set('content-type', 'application/json')
-  if (init.method && !['GET', 'HEAD'].includes(init.method)) {
+  const method = (init.method ?? 'GET').toUpperCase()
+  const body = init.body === undefined && (method === 'POST' || method === 'PATCH' || method === 'PUT') ? '{}' : init.body
+  if (body !== undefined) headers.set('content-type', 'application/json')
+  if (!['GET', 'HEAD'].includes(method)) {
     headers.set('x-superagent-csrf', CSRF_HEADER['x-superagent-csrf'])
   }
-  const response = await fetch(path, { credentials: 'include', ...init, headers })
+  const response = await fetch(path, { credentials: 'include', ...init, ...(body === undefined ? {} : { body }), headers })
   const text = await response.text()
   let payload: unknown = null
   try {

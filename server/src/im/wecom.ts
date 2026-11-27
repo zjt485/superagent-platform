@@ -189,8 +189,14 @@ export class WecomAdapter implements ImAdapter, OAuthProvider {
         userlist,
       }),
     })
-    if (Number(payload.errcode ?? 0) !== 0) {
-      throw new AppError(502, 'internal', `WeCom appchat/create failed: ${asString(payload.errmsg) ?? 'unknown error'}`)
+    const errcode = Number(payload.errcode ?? 0)
+    if (errcode !== 0) {
+      const errmsg = asString(payload.errmsg) ?? 'unknown error'
+      const hint =
+        errcode === 40035 || (userlist.length < 2 && /userlist|size/i.test(errmsg))
+          ? '（企业微信 appchat/create 要求初始群成员至少 2 人；可先让另一位成员扫码登录并加入项目，或先在现有企微群里 @Superagent /bind 绑定）'
+          : ''
+      throw new AppError(422, 'bad_request', `WeCom appchat/create failed (errcode=${errcode}): ${errmsg}${hint}`)
     }
     const chatId = asString(payload.chatid)
     if (!chatId) throw new AppError(502, 'internal', 'WeCom appchat/create did not return a chatid')
@@ -231,7 +237,18 @@ export class WecomAdapter implements ImAdapter, OAuthProvider {
     return { added: input.externalUserIds.filter((id) => !existing.includes(id)) }
   }
 
-  authorizeUrl(input: { state: string; redirectUri: string }): string {
+  authorizeUrl(input: { state: string; redirectUri: string; userAgent?: string | null }): string {
+    const isExternalBrowser = Boolean(input.userAgent && !/wxwork/i.test(input.userAgent))
+    if (isExternalBrowser && this.options.agentId) {
+      const params = new URLSearchParams({
+        login_type: 'CorpApp',
+        appid: this.options.corpId ?? '',
+        agentid: this.options.agentId,
+        redirect_uri: input.redirectUri,
+        state: input.state,
+      })
+      return `https://login.work.weixin.qq.com/wwlogin/sso/login?${params.toString()}`
+    }
     const params = new URLSearchParams({
       appid: this.options.corpId ?? '',
       redirect_uri: input.redirectUri,

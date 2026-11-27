@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { WsFrame } from '@wecom/aibot-node-sdk'
-import { botEventFromFrame } from '../src/im/wecom-bot.js'
+import { botEventFromFrame, wecomBotTargetId } from '../src/im/wecom-bot.js'
 
 function frame(body: Record<string, unknown>): WsFrame {
   return { headers: { req_id: 'req_1' }, body } as WsFrame
@@ -62,6 +62,8 @@ describe('WeCom smart robot frames', () => {
       'Superagent',
     )
     expect(event?.messages[0]?.externalChatId).toBe('p2p:wx_bob')
+    expect(wecomBotTargetId(event!.messages[0]!.externalChatId)).toBe('wx_bob')
+    expect(wecomBotTargetId('wc_managed_1')).toBe('wc_managed_1')
     expect(event?.messages[0]?.text).toBe('第一行 第二行')
   })
 

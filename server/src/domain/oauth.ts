@@ -9,7 +9,7 @@ export interface OAuthIdentity {
 
 export interface OAuthProvider {
   provider: ChannelProvider
-  authorizeUrl(input: { state: string; redirectUri: string }): string
+  authorizeUrl(input: { state: string; redirectUri: string; userAgent?: string | null }): string
   exchange(input: { code: string; redirectUri: string }): Promise<OAuthIdentity>
 }
 

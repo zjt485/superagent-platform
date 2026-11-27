@@ -63,6 +63,15 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
     request.rawBody = raw
     done(null, raw.toString('utf8'))
   })
+  app.addContentTypeParser('text/plain', { parseAs: 'string' }, (_request, body, done) => {
+    const text = typeof body === 'string' ? body.trim() : ''
+    if (!text) return done(null, {})
+    try {
+      done(null, JSON.parse(text))
+    } catch {
+      done(null, text)
+    }
+  })
 
   app.addHook('onRequest', async (request) => {
     const token = request.cookies?.sa_session
@@ -94,6 +103,9 @@ export async function buildApp(ctx: AppContext): Promise<FastifyInstance> {
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof AppError) {
+      if (error.statusCode >= 400) {
+        request.log.warn({ code: error.code, statusCode: error.statusCode, message: error.message }, 'request error')
+      }
       reply.code(error.statusCode).send(errorBody(error))
       return
     }

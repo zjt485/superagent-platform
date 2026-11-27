@@ -76,6 +76,15 @@ describe('WeCom adapter', () => {
     expect(url).toContain('appid=ww_test_corp')
     expect(url).toContain('scope=snsapi_base')
 
+    const qrUrl = adapter.authorizeUrl({
+      state: 'state-1',
+      redirectUri: 'https://agent.example.com/v1/auth/wecom/callback',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131.0',
+    })
+    expect(qrUrl).toContain('https://login.work.weixin.qq.com/wwlogin/sso/login')
+    expect(qrUrl).toContain('login_type=CorpApp')
+    expect(qrUrl).toContain('agentid=1000002')
+
     const fetchImpl = (async (input: string | URL | Request) => {
       const href = String(input)
       if (href.includes('/cgi-bin/gettoken')) {

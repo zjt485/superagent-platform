@@ -30,6 +30,10 @@ function textOf(frame: WsFrame): string {
   return ''
 }
 
+export function wecomBotTargetId(chatId: string): string {
+  return chatId.startsWith('p2p:') ? chatId.slice(4) : chatId
+}
+
 export function botEventFromFrame(frame: WsFrame, botName: string): InboundEvent | null {
   const body = frame.body as TextMessage | MixedMessage | VoiceMessage | undefined
   const rawText = textOf(frame).trim()
@@ -88,8 +92,15 @@ export function startWecomBot(ctx: CoreContext): WecomBotHandle | null {
       const event = botEventFromFrame(frame, ctx.config.WECOM_BOT_NAME)
       if (!event) return
       const results = await ingestInboundEvent(ctx, event)
+      const first = event.messages[0]
       ctx.log.info(
-        { msgId: event.deliveryId, chatId: event.messages[0]?.externalChatId, results },
+        {
+          msgId: event.deliveryId,
+          chatId: first?.externalChatId,
+          senderId: first?.sender.externalId,
+          text: first?.text.slice(0, 120),
+          results,
+        },
         'wecom bot message ingested',
       )
     })().catch((error) => ctx.log.error({ err: error }, 'wecom bot message handling failed'))
@@ -104,7 +115,8 @@ export function startWecomBot(ctx: CoreContext): WecomBotHandle | null {
     sender: {
       provider: 'wecom',
       async send(input) {
-        await client.sendMessage(input.chatId, {
+        const targetId = wecomBotTargetId(input.chatId)
+        await client.sendMessage(targetId, {
           msgtype: 'markdown',
           markdown: { content: input.text.slice(0, 4096) },
         })
